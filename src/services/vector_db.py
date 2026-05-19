@@ -1,31 +1,38 @@
 import os
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from langchain_openai import OpenAIEmbeddings
 
 class VectorDBService:
     """
-    Serviço responsável pela interface com o banco de dados vetorial Qdrant.
-    Em Data Science, esta é a nossa camada de Recuperação (Retrieval).
+    Serviço responsável pela interface assíncrona com o banco de dados vetorial Qdrant.
     """
     def __init__(self):
         # O URL virá do docker-compose ou do .env local
-        self.client = QdrantClient(
-            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-            api_key=os.getenv("QDRANT_API_KEY")
-        )
+        # No Docker, o host é 'local-vector-db'
+        self.url = os.getenv("QDRANT_URL", "http://localhost:6333")
+        self.api_key = os.getenv("QDRANT_API_KEY")
+        self.client = None # Inicializado sob demanda ou em setup
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
         self.collection_name = "maeve_knowledge"
-        self._ensure_collection()
 
-    def _ensure_collection(self):
+    async def _get_client(self) -> AsyncQdrantClient:
+        """Retorna o cliente assíncrono, inicializando-o se necessário."""
+        if self.client is None:
+            self.client = AsyncQdrantClient(
+                url=self.url,
+                api_key=self.api_key
+            )
+            await self._ensure_collection()
+        return self.client
+
+    async def _ensure_collection(self):
         """Garante que a coleção existe no Qdrant."""
-        collections = self.client.get_collections().collections
-        exists = any(c.name == self.collection_name for c in collections)
+        collections = await self.client.get_collections()
+        exists = any(c.name == self.collection_name for c in collections.collections)
         
         if not exists:
-            # text-embedding-3-small tem 1536 dimensões
-            self.client.create_collection(
+            await self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
             )
@@ -35,6 +42,7 @@ class VectorDBService:
         if not texts:
             return
 
+        client = await self._get_client()
         embeddings = self.embeddings.embed_documents(texts)
         points = []
         
@@ -42,12 +50,12 @@ class VectorDBService:
             metadata = metadatas[i] if metadatas else {}
             metadata["content"] = text
             points.append(PointStruct(
-                id=hash(text + str(i)) % (10**10), # ID simples para exemplo
+                id=hash(text + str(i)) % (10**10),
                 vector=vector,
                 payload=metadata
             ))
         
-        self.client.upsert(
+        await client.upsert(
             collection_name=self.collection_name,
             points=points
         )
@@ -55,14 +63,16 @@ class VectorDBService:
     async def search_context(self, query: str, limit: int = 3):
         """
         Realiza uma busca semântica para encontrar contextos relevantes.
-        Isso é o 'R' do RAG (Retrieval-Augmented Generation).
         """
+        client = await self._get_client()
         query_vector = self.embeddings.embed_query(query)
         
-        hits = self.client.search(
+        # A partir da v1.16.0+, o método .search foi substituído por .query_points
+        # no AsyncQdrantClient para unificar a API.
+        response = await client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit
         )
         
-        return [hit.payload.get("content", "") for hit in hits]
+        return [point.payload.get("content", "") for point in response.points]

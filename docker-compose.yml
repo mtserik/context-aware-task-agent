@@ -1,0 +1,33 @@
+services:
+  agent-app:
+    build: .
+    container_name: agent-app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    depends_on:
+      - local-vector-db
+    networks:
+      - maeve-network
+
+  local-vector-db:
+    image: qdrant/qdrant:latest
+    container_name: local-vector-db
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks:
+      - maeve-network
+
+networks:
+  maeve-network:
+    driver: bridge
+
+volumes:
+  qdrant_storage:
