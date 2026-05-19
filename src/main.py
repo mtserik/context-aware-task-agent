@@ -1,10 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
 from src.agent.engine import MaeveAgent
 from src.models.schemas import ChatRequest, ChatResponse
 from src.services.notion import NotionService
 from src.services.vector_db import VectorDBService
+from src.services.ticktick import TickTickService
 
 load_dotenv()
 
@@ -18,10 +20,30 @@ app = FastAPI(
 maeve = MaeveAgent()
 notion_service = NotionService()
 vector_db = VectorDBService()
+ticktick_service = TickTickService()
 
 @app.get("/")
 async def read_root():
     return {"status": "Maeve is online", "version": "0.1.0"}
+
+# --- TickTick OAuth Flow ---
+@app.get("/auth/ticktick")
+async def auth_ticktick():
+    """Redireciona o usuário para o login do TickTick."""
+    return RedirectResponse(ticktick_service.get_authorization_url())
+
+@app.get("/callback/ticktick")
+async def callback_ticktick(code: str):
+    """Recebe o código do TickTick e gera o Access Token."""
+    try:
+        token_data = await ticktick_service.get_access_token(code)
+        return {
+            "status": "success", 
+            "message": "Token obtido com sucesso! Adicione-o ao seu .env",
+            "access_token": token_data.get("access_token")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_maeve(request: ChatRequest):

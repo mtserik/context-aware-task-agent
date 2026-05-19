@@ -1,6 +1,8 @@
 from typing import Annotated, TypedDict
+from langgraph.graph.message import add_messages
 
 # Domain Model do LangGraph
 class AgentState(TypedDict):
-    messages: Annotated[list, "O histórico de mensagens da interação"]
+    # O add_messages permite que o LangGraph acumule as mensagens em vez de sobrescrevê-las
+    messages: Annotated[list, add_messages]
     current_intent: str | None

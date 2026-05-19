@@ -1,3 +1,4 @@
+httpx
 notion-client
 fastapi
 uvicorn

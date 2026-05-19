@@ -1,17 +1,20 @@
 # Step 1: Use an official, lightweight Python runtime as a parent image
 FROM python:3.11-slim
 
-# Step 2: Set environment variables to optimize Python inside the container
+# Step 2: Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV TZ=America/Sao_Paulo
 
-# Step 3: Set the working directory inside the container
+# Step 3: Set the working directory
 WORKDIR /app
 
-# Step 4: Install system dependencies (needed for certain Python packages or network tools)
+# Step 4: Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 # Step 5: Copy the requirements file into the container
