@@ -1,10 +1,11 @@
+import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
 from src.agent.engine import MaeveAgent
 from src.models.schemas import ChatRequest, ChatResponse
-from src.services.notion import NotionService
+from src.services.obsidian import ObsidianService
 from src.services.vector_db import VectorDBService
 from src.services.ticktick import TickTickService
 
@@ -13,12 +14,12 @@ load_dotenv()
 # --- App Initialization ---
 app = FastAPI(
     title="Maeve AI Agent", 
-    description="Refactored Context-Aware Task Orchestrator"
+    description="Context-Aware Task Orchestrator (Obsidian-Powered)"
 )
 
 # Singleton instances
 maeve = MaeveAgent()
-notion_service = NotionService()
+obsidian_service = ObsidianService()
 vector_db = VectorDBService()
 ticktick_service = TickTickService()
 
@@ -53,54 +54,43 @@ async def chat_with_maeve(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/sync/notion")
-async def sync_notion():
+@app.post("/sync/obsidian")
+async def sync_obsidian():
     """
-    Endpoint para sincronizar o Second Brain do Notion com o Qdrant.
+    Endpoint para sincronizar o Vault do Obsidian com o Qdrant.
+    Realiza git pull e indexa todos os arquivos .md.
     """
     try:
-        # 1. Buscar todos os objetos (páginas e bancos) disponíveis
-        objects = await notion_service.list_available_objects()
-        if not objects:
-            return {"status": "success", "message": "Nenhum conteúdo encontrado. Verifique as permissões no Notion."}
+        # 1. Sincronizar com o Git (Pull)
+        await obsidian_service.sync()
+        
+        # 2. Listar todos os arquivos .md
+        notes = await obsidian_service.list_all_notes()
+        if not notes:
+            return {"status": "success", "message": "Nenhuma nota encontrada no Vault."}
 
-        pages_synced = 0
-        processed_page_ids = set()
+        # 3. Processar e indexar cada nota
+        texts = []
+        metadatas = []
+        
+        for note_path in notes:
+            content = await obsidian_service.get_note_content(note_path)
+            if content.strip():
+                # Nome do arquivo como título
+                title = os.path.basename(note_path).replace(".md", "")
+                full_text = f"Título: {title}\nConteúdo: {content}"
+                
+                texts.append(full_text)
+                metadatas.append({
+                    "source": "obsidian", 
+                    "path": note_path, 
+                    "title": title
+                })
 
-        async def process_page(page_id: str, title: str):
-            if page_id in processed_page_ids:
-                return
-            content = await notion_service.get_page_text_content(page_id)
-            full_text = f"Título: {title}\nConteúdo: {content}"
-            await vector_db.upsert_documents(
-                texts=[full_text],
-                metadatas=[{"source": "notion", "page_id": page_id, "title": title}]
-            )
-            processed_page_ids.add(page_id)
+        # 4. Upsert no Qdrant
+        if texts:
+            await vector_db.upsert_documents(texts=texts, metadatas=metadatas)
 
-        for obj in objects:
-            obj_type = obj.get("object")
-            
-            if obj_type == "page":
-                # Extrair título da página
-                properties = obj.get("properties", {})
-                title_list = properties.get("title", {}).get("title", []) or \
-                             properties.get("Name", {}).get("title", [])
-                title = title_list[0].get("plain_text", "Sem Título") if title_list else "Sem Título"
-                await process_page(obj["id"], title)
-                pages_synced += 1
-
-            elif obj_type == "database":
-                # Buscar páginas dentro do banco de dados
-                pages = await notion_service.fetch_database_pages(obj["id"])
-                for page in pages:
-                    properties = page.get("properties", {})
-                    title_list = properties.get("title", {}).get("title", []) or \
-                                 properties.get("Name", {}).get("title", [])
-                    title = title_list[0].get("plain_text", "Sem Título") if title_list else "Sem Título"
-                    await process_page(page["id"], title)
-                    pages_synced += 1
-
-        return {"status": "success", "pages_synced": len(processed_page_ids)}
+        return {"status": "success", "notes_synced": len(texts)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro na sincronização: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro na sincronização do Obsidian: {str(e)}")

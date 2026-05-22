@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
@@ -6,9 +7,70 @@ from langchain_core.tools import tool
 from src.agent.state import AgentState
 from src.services.vector_db import VectorDBService
 from src.services.ticktick import TickTickService
+from src.services.obsidian import ObsidianService
 
 # --- Definição das Tools ---
 ticktick = TickTickService()
+obsidian = ObsidianService()
+
+@tool
+async def create_obsidian_note(title: str, content: str, folder: str = "Inbox"):
+    """
+    Cria uma nova nota no Vault do Obsidian.
+    folder: Opcional. Pasta onde a nota será salva (ex: 'Projetos', 'Estudos'). Padrão é 'Inbox'.
+    """
+    filename = f"{title}.md" if not title.endswith(".md") else title
+    relative_path = os.path.join(folder, filename)
+    commit_msg = f"Maeve: Criou nota '{title}' em {folder}"
+    await obsidian.write_note(relative_path, content, commit_message=commit_msg)
+    return f"Nota '{title}' criada com sucesso na pasta '{folder}'."
+
+@tool
+async def list_obsidian_folders():
+    """
+    Lista as pastas principais disponíveis no Vault do Obsidian.
+    Útil para saber onde salvar uma nova nota.
+    """
+    folders = await obsidian.list_folders()
+    if not folders:
+        return "Nenhuma pasta encontrada no Vault (apenas a raiz)."
+    return "Pastas disponíveis:\n" + "\n".join([f"- {f}" for f in folders])
+
+@tool
+async def delete_obsidian_item(relative_path: str):
+    """
+    Remove um arquivo ou pasta do Vault do Obsidian.
+    USE COM CAUTELA. relative_path deve incluir a pasta (ex: 'Inbox/NotaVelha.md').
+    """
+    commit_msg = f"Maeve: Removeu '{relative_path}'"
+    success = await obsidian.delete_item(relative_path, commit_message=commit_msg)
+    if success:
+        return f"Item '{relative_path}' removido com sucesso."
+    return f"Erro: O caminho '{relative_path}' não foi encontrado."
+
+@tool
+async def move_obsidian_item(old_path: str, new_path: str):
+    """
+    Move ou renomeia um arquivo ou pasta dentro do Vault.
+    Útil para organizar notas (ex: mover de 'Inbox/Nota.md' para 'Projetos/Nota.md').
+    """
+    commit_msg = f"Maeve: Moveu '{old_path}' para '{new_path}'"
+    success = await obsidian.move_item(old_path, new_path, commit_message=commit_msg)
+    if success:
+        return f"Item movido de '{old_path}' para '{new_path}' com sucesso."
+    return f"Erro: O caminho de origem '{old_path}' não foi encontrado."
+
+@tool
+async def cleanup_empty_obsidian_folders():
+    """
+    Remove recursivamente todas as pastas vazias no Vault do Obsidian.
+    Útil para limpar a estrutura após mover várias notas.
+    """
+    commit_msg = "Maeve: Limpeza de pastas vazias"
+    removed = await obsidian.cleanup_empty_folders(commit_message=commit_msg)
+    if not removed:
+        return "Nenhuma pasta vazia encontrada para remoção."
+    return "Pastas removidas:\n" + "\n".join([f"- {f}" for f in removed])
 
 @tool
 async def create_ticktick_task(title: str, content: str = "", due_date: str = None):
@@ -43,7 +105,7 @@ async def get_ticktick_tasks(date_filter: str = None):
 
     return "\n".join([f"- {t['title']} (Vence em: {t.get('dueDate', 'Sem data')})" for t in tasks])
 
-tools = [create_ticktick_task, get_ticktick_tasks]
+tools = [create_ticktick_task, get_ticktick_tasks, create_obsidian_note, list_obsidian_folders, delete_obsidian_item, move_obsidian_item, cleanup_empty_obsidian_folders]
 tool_node = ToolNode(tools)
 
 class MaeveAgent:
@@ -99,19 +161,31 @@ class MaeveAgent:
         current_date_info = now.strftime('%Y-%m-%d %H:%M:%S (Dia da semana: %A, Fuso: BRT/UTC-3)')
         
         system_content = (
-            "Você é a Maeve, uma assistente pessoal inteligente e proativa.\n"
+            "Você é a Maeve, uma assistente pessoal inteligente, proativa e organizada.\n"
             f"Data/Hora local do usuário (Brasil): {current_date_info}\n"
             f"Hoje é: {today_str}\n"
             f"Amanhã é: {tomorrow_str}\n\n"
-            "Você pode gerenciar tarefas no TickTick e consultar o Second Brain no Notion.\n"
-            "Utilize os seguintes contextos do Notion se forem relevantes:\n"
-            f"{context_str}\n\n"
-            "IMPORTANTE PARA TICKTICK:\n"
-            "- O fuso horário do usuário é UTC-03:00 (Brasília).\n"
-            "- Para criar hoje às 23h, use: 'YYYY-MM-DDT23:00:00-0300'.\n"
-            "- Ao buscar tarefas de 'hoje', use get_ticktick_tasks(date_filter='{today_str}').\n"
-            "- Ao buscar tarefas de 'amanhã', use get_ticktick_tasks(date_filter='{tomorrow_str}').\n"
-            "- Se o usuário apenas disser 'quais minhas tarefas', use get_ticktick_tasks() sem filtros."
+            "DIRETRIZES DE SEGUNDO CÉREBRO (OBSIDIAN & MÉTODO PARA):\n"
+            "- Você organiza o conhecimento do usuário utilizando o método PARA:\n"
+            "  1. Projects: Projetos ativos com data de término.\n"
+            "  2. Areas: Responsabilidades contínuas (ex: Saúde, Finanças, Carreira).\n"
+            "  3. Resources: Temas de interesse e materiais de referência.\n"
+            "  4. Archives: Itens completados ou inativos.\n"
+            "- Ao reorganizar o Vault, você deve ser EXAUSTIVA. Analise cada nota individualmente.\n"
+            "- Mapeie estruturas legadas (ex: '03 - Recursos') para as pastas padrão do PARA.\n"
+            "- SEMPRE apresente um plano completo detalhando o destino de cada nota antes de executar.\n"
+            "- Use a pasta 'Inbox' para capturas rápidas se não souber onde classificar.\n"
+            "- SEMPRE utilize links internos (Wikilinks): [[Nome da Nota]] para conectar conceitos.\n"
+            f"- Contextos recuperados do Vault:\n{context_str}\n\n"
+            "GESTÃO OPERACIONAL (TICKTICK):\n"
+            "- Você é responsável por manter a produtividade do usuário em dia.\n"
+            "- Ao criar tarefas, seja específico e use o fuso horário UTC-03:00.\n"
+            "- Formato de data para hoje às 23h: 'YYYY-MM-DDT23:00:00-0300'.\n"
+            "- Se o usuário perguntar pelas tarefas:\n"
+            f"  * De hoje: use get_ticktick_tasks(date_filter='{today_str}').\n"
+            f"  * De amanhã: use get_ticktick_tasks(date_filter='{tomorrow_str}').\n"
+            "  * Geral: use get_ticktick_tasks() sem filtros.\n"
+            "- Sempre que uma tarefa for criada, verifique se ela deve gerar uma nota de apoio no Obsidian."
         )
         
         # A SystemMessage DEVE vir sempre em primeiro lugar absoluta.
