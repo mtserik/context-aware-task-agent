@@ -45,34 +45,43 @@ class VectorDBService:
         client = await self._get_client()
         embeddings = self.embeddings.embed_documents(texts)
         points = []
-        
+
         for i, (text, vector) in enumerate(zip(texts, embeddings)):
             metadata = metadatas[i] if metadatas else {}
             metadata["content"] = text
+            # Garantir que o ID seja estável baseado no conteúdo ou path
+            point_id = hash(metadata.get("path", text) + str(i)) % (10**10)
+
             points.append(PointStruct(
-                id=hash(text + str(i)) % (10**10),
+                id=point_id,
                 vector=vector,
                 payload=metadata
             ))
-        
+
         await client.upsert(
             collection_name=self.collection_name,
             points=points
         )
 
-    async def search_context(self, query: str, limit: int = 3):
+    async def search_context(self, query: str, limit: int = 5):
         """
         Realiza uma busca semântica para encontrar contextos relevantes.
+        Retorna uma lista de dicionários com conteúdo e metadados.
         """
         client = await self._get_client()
         query_vector = self.embeddings.embed_query(query)
-        
-        # A partir da v1.16.0+, o método .search foi substituído por .query_points
-        # no AsyncQdrantClient para unificar a API.
+
         response = await client.query_points(
             collection_name=self.collection_name,
             query=query_vector,
-            limit=limit
+            limit=limit,
+            with_payload=True
         )
-        
-        return [point.payload.get("content", "") for point in response.points]
+
+        return [
+            {
+                "content": point.payload.get("content", ""),
+                "metadata": {k: v for k, v in point.payload.items() if k != "content"}
+            }
+            for point in response.points
+        ]

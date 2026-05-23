@@ -1,18 +1,23 @@
 import os
 import subprocess
 import glob
+import re
+import yaml
 from typing import List, Dict, Any
 
 class ObsidianService:
     """
     Serviço responsável pela integração com o Vault do Obsidian via Git.
-    Gerencia a sincronização (pull/push) e leitura de arquivos Markdown.
+    Gerencia a sincronização (pull/push), leitura de arquivos Markdown, 
+    YAML frontmatter e links.
     """
     def __init__(self):
         self.repo_url = os.getenv("OBSIDIAN_REPO_URL")
         self.vault_path = os.getenv("OBSIDIAN_VAULT_PATH", "/app/obsidian_vault")
-        self.ssh_key_source = "/root/.ssh/id_ed25519_maeve"
-        self.ssh_key_dest = "/tmp/id_ed25519_maeve_container"
+        # O arquivo no container é id_ed25519 (sem o sufixo _maeve que eu presumi antes)
+        self.ssh_key_source = "/root/.ssh/id_ed25519"
+        self.ssh_key_dest = "/tmp/id_ed25519_container"
+        self.templates_folder = ".maeve/templates"
         
         self._setup_ssh()
         self._setup_git_user()
@@ -79,40 +84,137 @@ class ObsidianService:
             )
         else:
             print("Atualizando Vault (git pull)...")
-            self._run_git(["pull", "origin", "main"])
+            try:
+                self._run_git(["pull", "--rebase", "origin", "main"])
+            except Exception as e:
+                print(f"Erro no pull --rebase: {e}. Tentando abortar rebase.")
+                try:
+                    self._run_git(["rebase", "--abort"])
+                except:
+                    pass
+                self._run_git(["pull", "origin", "main", "--no-edit"])
 
     async def push(self, message: str = "Maeve Auto-update"):
         """
-        Faz o commit e push das alterações locais.
+        Faz o commit e push das alterações locais, garantindo sincronia com o remoto.
+        Implementa lógica de rebase e resolução de conflitos simples.
         """
         try:
             self._run_git(["add", "."])
-            # Verifica se há algo para commitar
             status = self._run_git(["status", "--porcelain"])
+            
             if status.strip():
                 self._run_git(["commit", "-m", message])
+                
+                # Sincronização robusta
+                print("Sincronizando com o remoto antes do push (pull --rebase)...")
+                try:
+                    self._run_git(["pull", "--rebase", "origin", "main"])
+                except Exception:
+                    print("Conflito detectado ou falha no rebase. Tentando forçar resolução...")
+                    try:
+                        self._run_git(["rebase", "--abort"])
+                    except:
+                        pass
+                    # Tenta pull simples com estratégia recursiva padrão
+                    self._run_git(["pull", "origin", "main", "--no-edit"])
+                
                 self._run_git(["push", "origin", "main"])
-                print(f"Alterações enviadas: {message}")
+                print(f"Alterações enviadas com sucesso: {message}")
             else:
-                print("Nada para sincronizar (vault limpo).")
+                print("Nada para commitar.")
         except Exception as e:
-            print(f"Erro ao fazer push: {e}")
+            error_msg = f"FALHA CRÍTICA NO GIT: {str(e)}"
+            print(error_msg)
+            raise Exception(error_msg)
 
     async def list_all_notes(self) -> List[str]:
         """
-        Retorna a lista de caminhos de todos os arquivos .md no vault.
+        Retorna a lista de caminhos relativos de todos os arquivos .md no vault.
         """
         pattern = os.path.join(self.vault_path, "**", "*.md")
-        return glob.glob(pattern, recursive=True)
+        abs_paths = glob.glob(pattern, recursive=True)
+        return [os.path.relpath(p, self.vault_path) for p in abs_paths]
+
+    async def get_note_metadata(self, relative_path: str) -> Dict[str, Any]:
+        """
+        Extrai metadados básicos de uma nota (título, pasta, links, frontmatter).
+        """
+        full_path = relative_path if os.path.isabs(relative_path) else os.path.join(self.vault_path, relative_path)
+        if not os.path.exists(full_path):
+            return {}
+
+        title = os.path.basename(relative_path).replace(".md", "")
+        folder = os.path.dirname(os.path.relpath(full_path, self.vault_path))
+        
+        with open(full_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        # Extração de Frontmatter (YAML)
+        frontmatter = {}
+        body = content
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    frontmatter = yaml.safe_load(parts[1]) or {}
+                    body = parts[2]
+                except Exception as e:
+                    print(f"Erro ao processar YAML em {relative_path}: {e}")
+
+        # Links [[Link]]
+        links = re.findall(r"\[\[(.*?)\]\]", body)
+        
+        return {
+            "title": title,
+            "path": os.path.relpath(full_path, self.vault_path),
+            "folder": folder if folder != "." else "Raiz",
+            "links": list(set(links)),
+            "frontmatter": frontmatter,
+            "char_count": len(body)
+        }
+
+    async def get_backlinks(self, note_title: str) -> List[str]:
+        """
+        Encontra todas as notas que mencionam a nota atual.
+        """
+        backlinks = []
+        notes = await self.list_all_notes()
+        pattern = f"[[{note_title}]]"
+        
+        for note_path in notes:
+            content = await self.get_note_content(note_path)
+            if pattern in content:
+                backlinks.append(note_path)
+        
+        return backlinks
+
+    async def apply_template(self, template_name: str, variables: Dict[str, str]) -> str:
+        """
+        Lê um template e substitui as variáveis.
+        """
+        template_path = os.path.join(self.vault_path, self.templates_folder, f"{template_name}.md")
+        if not os.path.exists(template_path):
+            return f"Erro: Template '{template_name}' não encontrado em {self.templates_folder}"
+        
+        with open(template_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        for key, value in variables.items():
+            content = content.replace(f"{{{{{key}}}}}", value)
+            
+        return content
 
     async def get_note_content(self, file_path: str) -> str:
         """
-        Lê o conteúdo de uma nota Markdown.
+        Lê o conteúdo de uma nota Markdown. Aceita caminho absoluto ou relativo ao vault.
         """
-        if not os.path.exists(file_path):
+        full_path = file_path if os.path.isabs(file_path) else os.path.join(self.vault_path, file_path)
+        
+        if not os.path.exists(full_path):
             return ""
         
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(full_path, "r", encoding="utf-8") as f:
             content = f.read()
             
         # Opcional: Remover frontmatter (YAML entre ---)
@@ -130,6 +232,10 @@ class ObsidianService:
         """
         full_path = os.path.join(self.vault_path, relative_path)
         
+        # Proteção contra diretórios
+        if os.path.isdir(full_path):
+            raise Exception(f"Erro: '{relative_path}' é um diretório, não um arquivo.")
+
         # Garante que o diretório existe
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         
@@ -142,6 +248,14 @@ class ObsidianService:
             await self.push(commit_message)
             
         return full_path
+
+    async def write_note_with_frontmatter(self, relative_path: str, content: str, frontmatter: Dict[str, Any], commit_message: str = None) -> str:
+        """
+        Cria uma nota garantindo o bloco YAML no topo.
+        """
+        yaml_block = "---\n" + yaml.dump(frontmatter, allow_unicode=True) + "---\n"
+        full_content = yaml_block + content
+        return await self.write_note(relative_path, full_content, commit_message)
 
     async def list_folders(self) -> List[str]:
         """
@@ -179,13 +293,20 @@ class ObsidianService:
         new_full_path = os.path.join(self.vault_path, new_relative_path)
         
         if not os.path.exists(old_full_path):
-            return False
+            raise Exception(f"Caminho de origem não encontrado: {old_relative_path}")
             
+        # Proteção contra movimentação de pastas raiz
+        if old_relative_path.strip("/") in ["", ".", "Inbox", "Projects", "Areas", "Resources", "Archives"]:
+            raise Exception(f"Operação negada: Não é permitido mover a pasta raiz '{old_relative_path}'")
+
         # Garante que a pasta de destino existe
         os.makedirs(os.path.dirname(new_full_path), exist_ok=True)
         
         import shutil
-        shutil.move(old_full_path, new_full_path)
+        try:
+            shutil.move(old_full_path, new_full_path)
+        except Exception as e:
+            raise Exception(f"Erro ao mover: {str(e)}")
         
         if commit_message:
             await self.push(commit_message)
@@ -199,17 +320,13 @@ class ObsidianService:
         """
         removed_folders = []
         
-        # Percorre de baixo para cima para garantir que pastas que fiquem vazias 
-        # após a remoção de subpastas também sejam removidas.
         for root, dirs, files in os.walk(self.vault_path, topdown=False):
             for name in dirs:
                 full_path = os.path.join(root, name)
                 
-                # Ignorar pastas ocultas do sistema (como .git ou .obsidian)
-                if name.startswith("."):
+                if any(part.startswith(".") for part in os.path.relpath(full_path, self.vault_path).split(os.sep)):
                     continue
                 
-                # Verifica se está vazia
                 if not os.listdir(full_path):
                     os.rmdir(full_path)
                     removed_folders.append(os.path.relpath(full_path, self.vault_path))

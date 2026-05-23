@@ -76,15 +76,18 @@ async def sync_obsidian():
         for note_path in notes:
             content = await obsidian_service.get_note_content(note_path)
             if content.strip():
-                # Nome do arquivo como título
-                title = os.path.basename(note_path).replace(".md", "")
-                full_text = f"Título: {title}\nConteúdo: {content}"
+                # Obter metadados da nota
+                metadata = await obsidian_service.get_note_metadata(note_path)
+                
+                # Criar um texto amigável para busca vetorial
+                full_text = f"Título: {metadata['title']}\nCaminho: {metadata['path']}\nConteúdo: {content}"
                 
                 texts.append(full_text)
                 metadatas.append({
                     "source": "obsidian", 
-                    "path": note_path, 
-                    "title": title
+                    "path": metadata['path'], 
+                    "title": metadata['title'],
+                    "folder": metadata['folder']
                 })
 
         # 4. Upsert no Qdrant
@@ -93,4 +96,7 @@ async def sync_obsidian():
 
         return {"status": "success", "notes_synced": len(texts)}
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(error_details)
         raise HTTPException(status_code=500, detail=f"Erro na sincronização do Obsidian: {str(e)}")
