@@ -6,7 +6,12 @@ python-dotenv
 langchain
 langchain-openai
 langgraph
+langgraph-checkpoint-postgres
+psycopg[binary]
+psycopg-pool
+psycopg2-binary
 qdrant-client
 pydantic
 requests
 openai
+PyYAML

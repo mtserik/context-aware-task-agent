@@ -1,6 +1,8 @@
 services:
   agent-app:
     build: .
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
     container_name: agent-app
     ports:
       - "8000:8000"

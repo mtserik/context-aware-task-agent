@@ -9,11 +9,13 @@ from src.agent.state import AgentState
 from src.services.vector_db import VectorDBService
 from src.services.ticktick import TickTickService
 from src.services.obsidian import ObsidianService
+from src.services.database import DatabaseService
 
 # --- Definição das Tools ---
 ticktick = TickTickService()
 obsidian = ObsidianService()
 vector_db = VectorDBService()
+db_service = DatabaseService()
 
 @tool
 async def create_obsidian_note(title: str, content: str, folder: str = "Inbox"):
@@ -312,13 +314,13 @@ tools = [
 tool_node = ToolNode(tools)
 
 class MaeveAgent:
-    def __init__(self, model_name: str = "gpt-4o-mini"):
+    def __init__(self, checkpointer=None, model_name: str = "gpt-4o-mini"):
         self.vector_db = vector_db
         self.llm = ChatOpenAI(model=model_name, temperature=0).bind_tools(tools)
-        self._graph = self._build_graph()
+        self._graph = self._build_graph(checkpointer)
 
-    def _build_graph(self):
-        """Define a estrutura interna do LangGraph com suporte a ferramentas."""
+    def _build_graph(self, checkpointer):
+        """Define a estrutura interna do LangGraph com suporte a ferramentas e persistência."""
         workflow = StateGraph(AgentState)
         
         workflow.add_node("call_model", self._call_model_node)
@@ -326,7 +328,7 @@ class MaeveAgent:
         
         workflow.set_entry_point("call_model")
         
-        # Lógica de roteamento: Se o modelo chamar ferramentas, vai para o nó de ferramentas
+        # Lógica de roteamento
         def should_continue(state: AgentState):
             messages = state['messages']
             last_message = messages[-1]
@@ -335,19 +337,37 @@ class MaeveAgent:
             return END
 
         workflow.add_conditional_edges("call_model", should_continue)
-        workflow.add_edge("tools", "call_model") # Volta para o modelo após executar a ferramenta
+        workflow.add_edge("tools", "call_model")
         
-        return workflow.compile()
+        return workflow.compile(checkpointer=checkpointer)
 
     async def _call_model_node(self, state: AgentState):
         """Lógica de processamento do nó com RAG e Tool Calling."""
         from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
         
-        messages = state['messages']
-        
+        # 0. Saneamento de Histórico (Evita erro 400 da OpenAI)
+        raw_messages = state['messages']
+        clean_messages = []
+        for i, m in enumerate(raw_messages):
+            # Se for AIMessage com tool_calls, verifica se há ToolMessages correspondentes depois
+            if isinstance(m, AIMessage) and m.tool_calls:
+                has_response = False
+                if i + 1 < len(raw_messages) and isinstance(raw_messages[i+1], ToolMessage):
+                    has_response = True
+                
+                # Só mantém se tiver resposta ou se for a última mensagem do turno anterior 
+                # (o LangGraph vai cuidar de chamar a tool se for o caso)
+                if has_response:
+                    clean_messages.append(m)
+                else:
+                    print(f"🧹 Removendo chamada de ferramenta órfã: {m.tool_calls[0]['name']}")
+                    continue
+            else:
+                clean_messages.append(m)
+
         # 1. Recuperação de Contexto (RAG)
         last_user_query = ""
-        for m in reversed(messages):
+        for m in reversed(clean_messages):
             if isinstance(m, HumanMessage) or (isinstance(m, tuple) and m[0] == "user"):
                 last_user_query = m.content if hasattr(m, "content") else m[1]
                 break
@@ -372,6 +392,7 @@ class MaeveAgent:
             f"Hoje é: {today_str}\n"
             f"Amanhã é: {tomorrow_str}\n\n"
             "DIRETRIZES DE EXECUÇÃO E INTELIGÊNCIA:\n"
+            "- MEMÓRIA AUTOMÁTICA: Você possui memória persistente de conversa (via Supabase). Você NÃO precisa criar notas no Obsidian para lembrar de fatos simples ou preferências ditas no chat, a menos que o usuário peça explicitamente por uma nota.\n"
             "- INTEGRIDADE EM PRIMEIRO LUGAR: Sua prioridade é a realidade dos arquivos no disco, não a sua memória. Se uma ferramenta diz que o arquivo ainda está lá, ele ESTÁ lá.\n"
             "- VERIFICAÇÃO CONTÍNUA: Após cada ação de escrita, movimentação ou deleção, você DEVE usar `list_obsidian_notes` para confirmar o resultado. Não presuma sucesso.\n"
             "- RESILIÊNCIA A ERROS: Se o Git falhar, informe ao usuário o erro técnico real. Não tente mascarar falhas.\n"
@@ -401,19 +422,22 @@ class MaeveAgent:
         )
         
         # A SystemMessage DEVE vir sempre em primeiro lugar absoluta.
-        input_messages = [SystemMessage(content=system_content)] + messages
+        input_messages = [SystemMessage(content=system_content)] + clean_messages
         
         # 3. Geração / Decisão
         response = await self.llm.ainvoke(input_messages)
         return {"messages": [response]}
 
-    async def run(self, user_input: str) -> str:
-        """Interface pública para executar o agente."""
+    async def run(self, user_input: str, thread_id: str = "default-thread") -> str:
+        """Interface pública para executar o agente com persistência."""
         initial_state = {
             "messages": [("user", user_input)],
             "current_intent": None
         }
-        result = await self._graph.ainvoke(initial_state)
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        result = await self._graph.ainvoke(initial_state, config=config)
+        
         # Retornamos a última mensagem que não seja uma chamada de ferramenta
         for m in reversed(result["messages"]):
             if hasattr(m, "content") and m.content:

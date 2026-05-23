@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
-from src.agent.engine import MaeveAgent
+from src.agent.engine import MaeveAgent, db_service
 from src.models.schemas import ChatRequest, ChatResponse
 from src.services.obsidian import ObsidianService
 from src.services.vector_db import VectorDBService
@@ -17,39 +17,41 @@ app = FastAPI(
     description="Context-Aware Task Orchestrator (Obsidian-Powered)"
 )
 
-# Singleton instances
-maeve = MaeveAgent()
+# Global instances
+maeve = None
 obsidian_service = ObsidianService()
 vector_db = VectorDBService()
 ticktick_service = TickTickService()
+
+@app.on_event("startup")
+async def startup_event():
+    global maeve
+    try:
+        # Inicializa persistência no Supabase
+        checkpointer = await db_service.get_checkpointer()
+        maeve = MaeveAgent(checkpointer=checkpointer)
+        print("✅ Maeve Agent inicializado com persistência no Supabase.")
+    except Exception as e:
+        print(f"❌ Erro ao inicializar Maeve: {e}")
+        # Fallback para sem persistência se falhar
+        maeve = MaeveAgent()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await db_service.close()
 
 @app.get("/")
 async def read_root():
     return {"status": "Maeve is online", "version": "0.1.0"}
 
-# --- TickTick OAuth Flow ---
-@app.get("/auth/ticktick")
-async def auth_ticktick():
-    """Redireciona o usuário para o login do TickTick."""
-    return RedirectResponse(ticktick_service.get_authorization_url())
-
-@app.get("/callback/ticktick")
-async def callback_ticktick(code: str):
-    """Recebe o código do TickTick e gera o Access Token."""
-    try:
-        token_data = await ticktick_service.get_access_token(code)
-        return {
-            "status": "success", 
-            "message": "Token obtido com sucesso! Adicione-o ao seu .env",
-            "access_token": token_data.get("access_token")
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ... (OAuth endpoints)
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_maeve(request: ChatRequest):
+    if not maeve:
+        raise HTTPException(status_code=503, detail="Agente não inicializado.")
     try:
-        agent_response = await maeve.run(request.message)
+        agent_response = await maeve.run(request.message, thread_id=request.thread_id)
         return ChatResponse(response=agent_response)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
