@@ -15,3 +15,4 @@ pydantic
 requests
 openai
 PyYAML
+mcp
