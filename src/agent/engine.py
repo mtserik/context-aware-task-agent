@@ -182,6 +182,30 @@ async def batch_ticktick_tasks(tasks_list: List[Dict[str, Any]]):
         return f"✅ {len(tasks_list)} tarefas criadas via lote."
     except Exception as e: return f"❌ Erro lote: {str(e)}"
 
+# --- Ferramentas de Lembrete ---
+
+@tool
+async def set_reminder(content: str, reminder_at: str, user_id: str, chat_id: str):
+    """
+    Agenda um lembrete customizado.
+    reminder_at: Formato ISO 'YYYY-MM-DDTHH:MM:SS-0300'.
+    """
+    try:
+        reminder_id = await db_service.create_reminder(user_id, chat_id, content, reminder_at)
+        return f"✅ Lembrete agendado com sucesso! [ID: {reminder_id}]"
+    except Exception as e:
+        return f"❌ Erro ao agendar lembrete: {str(e)}"
+
+@tool
+async def list_active_reminders(user_id: str):
+    """Lista todos os lembretes pendentes do usuário."""
+    try:
+        reminders = await db_service.list_user_reminders(user_id)
+        if not reminders: return "Você não tem lembretes ativos."
+        return "Lembretes ativos:\n" + "\n".join([f"- {r[0]} em {r[1].strftime('%d/%m %H:%M')}" for r in reminders])
+    except Exception as e:
+        return f"❌ Erro ao listar lembretes: {str(e)}"
+
 tools = [
     create_obsidian_note, list_obsidian_folders, delete_obsidian_item, 
     move_obsidian_item, cleanup_empty_obsidian_folders, list_obsidian_notes,
@@ -191,7 +215,8 @@ tools = [
     create_ticktick_project, 
     get_ticktick_tasks,
     get_ticktick_metrics_via_mcp, 
-    batch_ticktick_tasks
+    batch_ticktick_tasks,
+    set_reminder, list_active_reminders
 ]
 tool_node = ToolNode(tools)
 
@@ -211,26 +236,38 @@ class MaeveAgent:
 
     async def _call_model_node(self, state: AgentState):
         from langchain_core.messages import SystemMessage, HumanMessage
-        last_query = next((m.content for m in reversed(state['messages']) if isinstance(m, HumanMessage)), "")
+        # Extrair user_id e chat_id das mensagens (se disponíveis)
+        user_msg = next((m for m in reversed(state['messages']) if isinstance(m, HumanMessage)), None)
+        user_id = user_msg.additional_kwargs.get("user_id", "unknown") if user_msg else "unknown"
+        chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
+
+        last_query = user_msg.content if user_msg else ""
         context_docs = await vector_db.search_context(last_query) if last_query else []
         context_str = "\n".join([f"- {doc['metadata'].get('title')}: {doc['content'][:200]}" for doc in context_docs])
         
         now = datetime.now()
         system_content = (
-            f"Você é a Maeve. Data/Hora atual: {now.strftime('%Y-%m-%d %H:%M')}.\n"
+            f"Você é a Maeve, uma assistente pessoal inteligente e nativa do Brasil. Data/Hora atual: {now.strftime('%Y-%m-%d %H:%M')}.\n"
+            f"IDENTIDADE: Seu user_id é '{user_id}' e o chat_id atual é '{chat_id}'.\n"
+            "PERSONALIDADE & IDIOMA:\n"
+            "1. Responda SEMPRE em Português do Brasil de forma natural, clara e profissional.\n"
+            "2. Evite construções gramaticais que pareçam traduções literais do inglês. Use expressões idiomáticas brasileiras.\n"
+            "3. Como suas respostas são lidas por um motor de síntese de voz (TTS), escreva de forma fluida, evitando excesso de símbolos ou listas numeradas muito complexas se não forem estritamente necessárias.\n"
             "REGRAS DE OURO:\n"
             "1. FORMATO DE DATA: Use SEMPRE 'YYYY-MM-DDTHH:MM:SS-0300'.\n"
             f"   - Exemplo (Amanhã às 09h): '{(now + timedelta(days=1)).strftime('%Y-%m-%d')}T09:00:00-0300'.\n"
-            "2. SEQUENCIAMENTO: Para subtarefas, crie o PAI primeiro, pegue o ID, e em um novo turno crie as FILHAS.\n"
-            "3. EDIÇÃO: Use `update_ticktick_task` com o ID obtido via `get_ticktick_tasks`.\n"
-            "4. PRIORIDADES: 1=Baixa, 3=Média, 5=Alta.\n"
+            "2. LEMBRETES: Use `set_reminder` para agendar avisos proativos. Passe sempre seu user_id e chat_id.\n"
+            "3. SEQUENCIAMENTO: Para subtarefas TickTick, crie o PAI primeiro, pegue o ID, e em um novo turno crie as FILHAS.\n"
+            "4. EDIÇÃO: Use `update_ticktick_task` com o ID obtido via `get_ticktick_tasks`.\n"
             f"Contexto:\n{context_str}"
         )
         return {"messages": [await self.llm.ainvoke([SystemMessage(content=system_content)] + state['messages'])]}
 
-    async def run(self, user_input: str, thread_id: str = "default-thread") -> str:
+    async def run(self, user_input: Any, thread_id: str = "default-thread") -> str:
         config = {"configurable": {"thread_id": thread_id}}
-        result = await self._graph.ainvoke({"messages": [("user", user_input)]}, config=config)
+        # Aceita tanto string quanto BaseMessage (para passar additional_kwargs)
+        input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
+        result = await self._graph.ainvoke({"messages": [input_msg]}, config=config)
         for m in reversed(result["messages"]):
             if hasattr(m, "content") and m.content: return m.content
         return "Processado."

@@ -16,3 +16,5 @@ requests
 openai
 PyYAML
 mcp
+python-telegram-bot
+pypdf

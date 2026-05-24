@@ -39,3 +39,18 @@ END;
 $$ language 'plpgsql';
 
 CREATE TRIGGER update_threads_updated_at BEFORE UPDATE ON threads FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+
+-- 7. Tabela de Lembretes Proativos
+CREATE TABLE IF NOT EXISTS reminders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    reminder_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    is_completed BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_reminder_at ON reminders(reminder_at) WHERE is_completed = FALSE;
+CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id);

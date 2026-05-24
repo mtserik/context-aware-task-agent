@@ -1,3 +1,4 @@
+import asyncio
 import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -8,6 +9,8 @@ from src.models.schemas import ChatRequest, ChatResponse
 from src.services.obsidian import ObsidianService
 from src.services.vector_db import VectorDBService
 from src.services.ticktick import TickTickService
+from src.services.telegram_bot import TelegramService
+from src.services.reminder_worker import reminder_worker
 
 load_dotenv()
 
@@ -22,22 +25,37 @@ maeve = None
 obsidian_service = ObsidianService()
 vector_db = VectorDBService()
 ticktick_service = TickTickService()
+telegram_bot = TelegramService()
 
 @app.on_event("startup")
 async def startup_event():
-    global maeve
+    global maeve, telegram_bot
+    
+    # 1. Inicializa Maeve (com ou sem Supabase)
     try:
-        # Inicializa persistência no Supabase
         checkpointer = await db_service.get_checkpointer()
         maeve = MaeveAgent(checkpointer=checkpointer)
         print("✅ Maeve Agent inicializado com persistência no Supabase.")
     except Exception as e:
-        print(f"❌ Erro ao inicializar Maeve: {e}")
-        # Fallback para sem persistência se falhar
+        print(f"⚠️ Erro ao conectar ao Supabase: {e}. Usando memória volátil.")
         maeve = MaeveAgent()
+    
+    # 2. Inicializa e inicia o Telegram Bot em background
+    try:
+        if telegram_bot.token:
+            asyncio.create_task(telegram_bot.start_bot())
+            print("🚀 Tentando iniciar Interface Telegram em background...")
+        else:
+            print("⚠️ TELEGRAM_BOT_TOKEN não configurado. Interface Telegram desativada.")
+    except Exception as e:
+        print(f"❌ Erro ao iniciar Telegram: {e}")
+
+    # 3. Inicia o Worker de Lembretes
+    asyncio.create_task(reminder_worker(telegram_bot, db_service))
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    await telegram_bot.stop_bot()
     await db_service.close()
 
 @app.get("/")
