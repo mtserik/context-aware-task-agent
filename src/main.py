@@ -1,6 +1,7 @@
 import asyncio
 import os
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, Security
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
@@ -13,6 +14,19 @@ from src.services.telegram_bot import TelegramService
 from src.services.reminder_worker import reminder_worker
 
 load_dotenv()
+
+# --- Security Setup ---
+API_KEY = os.getenv("API_KEY")
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+async def get_api_key(api_key_header: str = Security(api_key_header)):
+    if not API_KEY:
+        # Se não houver chave no .env, permitimos acesso apenas para desenvolvimento local
+        return "dev-mode"
+    if api_key_header == API_KEY:
+        return api_key_header
+    raise HTTPException(status_code=403, detail="Acesso não autorizado: API Key inválida.")
 
 # --- App Initialization ---
 app = FastAPI(
@@ -64,7 +78,7 @@ async def read_root():
 
 # ... (OAuth endpoints)
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, dependencies=[Depends(get_api_key)])
 async def chat_with_maeve(request: ChatRequest):
     if not maeve:
         raise HTTPException(status_code=503, detail="Agente não inicializado.")
@@ -74,7 +88,7 @@ async def chat_with_maeve(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/sync/obsidian")
+@app.post("/sync/obsidian", dependencies=[Depends(get_api_key)])
 async def sync_obsidian():
     """
     Endpoint para sincronizar o Vault do Obsidian com o Qdrant.

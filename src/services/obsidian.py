@@ -35,21 +35,38 @@ class ObsidianService:
 
     def _setup_ssh(self):
         """
-        Corrige permissões da chave SSH e configura o comando git.
-        Necessário pois chaves montadas do Windows costumam vir com permissão 777,
-        o que o SSH rejeita por segurança.
+        Configura a chave SSH a partir de variável de ambiente ou arquivo local.
+        Prioriza a variável SSH_PRIVATE_KEY para deploy cloud.
         """
         try:
-            if os.path.exists(self.ssh_key_source):
-                # Copia para um lugar onde possamos mudar a permissão (volumes ro não permitem chmod)
+            ssh_private_key = os.getenv("SSH_PRIVATE_KEY")
+            
+            if ssh_private_key:
+                # 1. Modo Cloud: Chave via variável de ambiente
+                # Garante que o conteúdo tenha as quebras de linha corretas
+                key_content = ssh_private_key.replace("\\n", "\n").strip()
+                if not key_content.endswith("\n"):
+                    key_content += "\n"
+                
+                with open(self.ssh_key_dest, "w") as f:
+                    f.write(key_content)
+                
+                subprocess.run(["chmod", "600", self.ssh_key_dest], check=True)
+                print("SSH configurado via variável SSH_PRIVATE_KEY.")
+            
+            elif os.path.exists(self.ssh_key_source):
+                # 2. Modo Local: Chave via mapeamento de volume
                 subprocess.run(["cp", self.ssh_key_source, self.ssh_key_dest], check=True)
                 subprocess.run(["chmod", "600", self.ssh_key_dest], check=True)
-                os.environ["GIT_SSH_COMMAND"] = f"ssh -i {self.ssh_key_dest} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-                print(f"SSH configurado usando {self.ssh_key_dest}")
+                print(f"SSH configurado usando mapeamento local em {self.ssh_key_dest}.")
+            
             else:
-                # Fallback caso a chave não esteja no local esperado
-                os.environ["GIT_SSH_COMMAND"] = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-                print("Aviso: Chave SSH não encontrada em /root/.ssh/id_ed25519. Usando SSH padrão.")
+                print("Aviso: Nenhuma chave SSH encontrada (variável ou arquivo). Git pode falhar.")
+                return
+
+            # Configura o comando Git para usar a chave correta
+            os.environ["GIT_SSH_COMMAND"] = f"ssh -i {self.ssh_key_dest} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
         except Exception as e:
             print(f"Erro ao configurar SSH: {e}")
 
