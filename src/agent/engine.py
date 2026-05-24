@@ -13,12 +13,14 @@ from src.services.vector_db import VectorDBService
 from src.services.ticktick import TickTickService
 from src.services.obsidian import ObsidianService
 from src.services.database import DatabaseService
+from src.services.search import SearchService
 
 # --- Inicialização dos Serviços ---
 ticktick = TickTickService()
 obsidian = ObsidianService()
 vector_db = VectorDBService()
 db_service = DatabaseService()
+search_service = SearchService()
 
 # --- Ferramentas Obsidian ---
 
@@ -206,6 +208,34 @@ async def list_active_reminders(user_id: str):
     except Exception as e:
         return f"❌ Erro ao listar lembretes: {str(e)}"
 
+# --- Ferramentas de Pesquisa Web ---
+
+@tool
+async def web_search(query: str):
+    """
+    Realiza uma busca rápida na internet para fatos atuais ou informações gerais.
+    Ideal para perguntas como 'qual a previsão do tempo' ou 'quem venceu o jogo'.
+    """
+    # O logger aqui será capturado pelo TelegramService se quisermos feedback em tempo real
+    print(f"WEB_SEARCH_START: {query}") 
+    results = await search_service.search(query)
+    if not results or "error" in results[0]:
+        return f"Erro na pesquisa: {results[0].get('error') if results else 'Sem resultados'}"
+    
+    formatted = "\n".join([f"- {r['title']} ({r['url']}): {r['content'][:300]}..." for r in results])
+    return f"Resultados da Pesquisa Web:\n{formatted}"
+
+@tool
+async def deep_research(query: str):
+    """
+    Realiza uma pesquisa aprofundada na web para tópicos complexos.
+    Sintetiza informações de múltiplas fontes. Use quando o usuário pedir
+    uma 'investigação', 'estudo detalhado' ou 'pesquisa profunda'.
+    """
+    print(f"DEEP_RESEARCH_START: {query}")
+    synthesis = await search_service.deep_research(query)
+    return f"Síntese da Pesquisa Aprofundada:\n{synthesis}"
+
 tools = [
     create_obsidian_note, list_obsidian_folders, delete_obsidian_item, 
     move_obsidian_item, cleanup_empty_obsidian_folders, list_obsidian_notes,
@@ -216,7 +246,8 @@ tools = [
     get_ticktick_tasks,
     get_ticktick_metrics_via_mcp, 
     batch_ticktick_tasks,
-    set_reminder, list_active_reminders
+    set_reminder, list_active_reminders,
+    web_search, deep_research
 ]
 tool_node = ToolNode(tools)
 
@@ -251,17 +282,30 @@ class MaeveAgent:
             f"IDENTIDADE: Seu user_id é '{user_id}' e o chat_id atual é '{chat_id}'.\n"
             "PERSONALIDADE & IDIOMA:\n"
             "1. Responda SEMPRE em Português do Brasil de forma natural, clara e profissional.\n"
-            "2. Evite construções gramaticais que pareçam traduções literais do inglês. Use expressões idiomáticas brasileiras.\n"
-            "3. Como suas respostas são lidas por um motor de síntese de voz (TTS), escreva de forma fluida, evitando excesso de símbolos ou listas numeradas muito complexas se não forem estritamente necessárias.\n"
+            "2. FORMATAÇÃO TELEGRAM: Use Markdown simplificado:\n"
+            "   - Use *negrito* para ênfase.\n"
+            "   - Use `código` para IDs, datas ou comandos.\n"
+            "   - Use listas com '-' de forma limpa.\n"
+            "   - EVITE tabelas complexas ou Markdown denso que quebre no celular.\n"
+            "3. Como suas respostas são lidas por um motor de síntese de voz (TTS), escreva de forma fluida e evite pontuações excessivas.\n"
             "REGRAS DE OURO:\n"
-            "1. FORMATO DE DATA: Use SEMPRE 'YYYY-MM-DDTHH:MM:SS-0300'.\n"
+            "1. PESQUISA WEB: Use `web_search` para fatos rápidos/recentes e `deep_research` para análises complexas ou quando solicitado explicitamente.\n"
+            "2. FORMATO DE DATA: Use SEMPRE 'YYYY-MM-DDTHH:MM:SS-0300'.\n"
             f"   - Exemplo (Amanhã às 09h): '{(now + timedelta(days=1)).strftime('%Y-%m-%d')}T09:00:00-0300'.\n"
-            "2. LEMBRETES: Use `set_reminder` para agendar avisos proativos. Passe sempre seu user_id e chat_id.\n"
-            "3. SEQUENCIAMENTO: Para subtarefas TickTick, crie o PAI primeiro, pegue o ID, e em um novo turno crie as FILHAS.\n"
-            "4. EDIÇÃO: Use `update_ticktick_task` com o ID obtido via `get_ticktick_tasks`.\n"
+            "3. LEMBRETES: Use `set_reminder` para agendar avisos proativos. Passe sempre seu user_id e chat_id.\n"
+            "4. SEQUENCIAMENTO: Para subtarefas TickTick, crie o PAI primeiro, pegue o ID, e em um novo turno crie as FILHAS.\n"
+            "5. EDIÇÃO: Use `update_ticktick_task` com o ID obtido via `get_ticktick_tasks`.\n"
             f"Contexto:\n{context_str}"
         )
         return {"messages": [await self.llm.ainvoke([SystemMessage(content=system_content)] + state['messages'])]}
+
+    async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):
+        """Versão que retorna o stream de eventos para detecção de ferramentas."""
+        config = {"configurable": {"thread_id": thread_id}}
+        input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
+        
+        async for event in self._graph.astream_events({"messages": [input_msg]}, config=config, version="v1"):
+            yield event
 
     async def run(self, user_input: Any, thread_id: str = "default-thread") -> str:
         config = {"configurable": {"thread_id": thread_id}}

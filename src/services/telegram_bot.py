@@ -114,7 +114,7 @@ class TelegramService:
             await query.edit_message_text(text="Erro ao salvar sua preferência de voz.")
 
     async def _process_text(self, text: str, update: Update, context: ContextTypes.DEFAULT_TYPE, force_voice: bool = False):
-        """Método auxiliar para processar texto com a Maeve."""
+        """Método auxiliar para processar texto com a Maeve usando streaming de eventos."""
         user_id = str(update.effective_user.id)
         chat_id = str(update.effective_chat.id)
         thread_id = f"tg-{user_id}"
@@ -122,26 +122,53 @@ class TelegramService:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         
         try:
-            # Importação tardia para evitar circularidade
             from src.main import maeve
-            if maeve:
-                # Passamos metadados adicionais para o agente
-                from langchain_core.messages import HumanMessage
-                msg = HumanMessage(content=text, additional_kwargs={"user_id": user_id, "chat_id": chat_id})
-                
-                # Modificado o run para aceitar a mensagem estruturada ou ajustar o engine
-                # Por simplicidade aqui, vamos ajustar o run do MaeveAgent para lidar com isso
-                response = await maeve.run(msg, thread_id=thread_id)
-                
-                # Se o usuário mandou áudio ou pediu explicitamente, respondemos com áudio
-                if force_voice or "responda em áudio" in text.lower() or "fale" in text.lower():
-                    await self._respond_with_voice(response, update)
-                else:
-                    await update.message.reply_text(response)
-            else:
+            if not maeve:
                 await update.message.reply_text("O motor da Maeve está aquecendo. Tente novamente em alguns segundos.")
+                return
+
+            from langchain_core.messages import HumanMessage
+            msg = HumanMessage(content=text, additional_kwargs={"user_id": user_id, "chat_id": chat_id})
+            
+            status_msg = None
+            final_response = ""
+
+            # 1. Consome os eventos do agente
+            async for event in maeve.run_stream(msg, thread_id=thread_id):
+                kind = event.get("event")
+                
+                # Detecta se uma ferramenta de pesquisa foi chamada
+                if kind == "on_tool_start":
+                    tool_name = event.get("name", "")
+                    if tool_name in ["web_search", "deep_research"] and not status_msg:
+                        icon = "🌐" if tool_name == "web_search" else "🧠"
+                        status_msg = await update.message.reply_text(f"{icon} _Pesquisando na web..._", parse_mode="Markdown")
+                
+                # Captura a resposta final (geralmente no final do grafo)
+                elif kind == "on_chat_model_end":
+                    # Pega o conteúdo da última mensagem gerada pelo modelo
+                    # Nota: O astream_events retorna metadados ricos aqui
+                    output = event.get("data", {}).get("output")
+                    if output and hasattr(output, "content"):
+                        final_response = output.content
+
+            # 2. Limpeza do status
+            if status_msg:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
+                except: pass
+
+            # 3. Resposta final
+            if final_response:
+                if force_voice or "responda em áudio" in text.lower() or "fale" in text.lower():
+                    await self._respond_with_voice(final_response, update)
+                else:
+                    await update.message.reply_text(final_response, parse_mode="Markdown")
+            else:
+                await update.message.reply_text("Não consegui gerar uma resposta.")
+
         except Exception as e:
-            logging.error(f"Erro no Telegram: {e}")
+            logging.error(f"Erro no Telegram (Stream): {e}")
             await update.message.reply_text("Tive um erro interno ao processar sua mensagem.")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
