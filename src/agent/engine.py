@@ -121,46 +121,49 @@ async def create_ticktick_task(
     except Exception as e: return f"❌ Erro: {str(e)}"
 
 @tool
-async def update_ticktick_task(
-    task_id: str,
-    title: str = None,
-    content: str = None,
-    due_date: str = None,
-    priority: int = None,
-    status: int = None
-):
-    """
-    Atualiza uma tarefa existente no TickTick.
-    task_id: OBRIGATÓRIO.
-    status: 0 (pendente), 2 (concluída).
-    """
-    print(f"DEBUG [update_ticktick_task]: ID={task_id}, Título={title}")
-    kwargs = {}
-    if title: kwargs["title"] = title
-    if content: kwargs["content"] = content
-    if due_date: kwargs["dueDate"] = due_date
-    if priority is not None: kwargs["priority"] = priority
-    if status is not None: kwargs["status"] = status
-    
-    try:
-        await ticktick.update_task(task_id, **kwargs)
-        return f"✅ Tarefa {task_id} atualizada com sucesso!"
-    except Exception as e: return f"❌ Erro ao atualizar: {str(e)}"
-
-@tool
 async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
     """
-    Atualiza múltiplas tarefas de uma vez.
-    Formato esperado: [{"task_id": "id", "due_date": "...", "status": 0}, ...]
+    ÚNICA ferramenta para atualizar tarefas no TickTick (seja 1 ou várias).
+    Use para mudar datas, títulos, projetos ou concluir tarefas.
+    Cada objeto DEVE ter: {"task_id": "...", "title": "...", "project_id": "..."}
+    Campos suportados: "due_date" (Fim), "start_date" (Início), "status", "priority".
+    DICA: Para Time Blocking (duração), envie datas de início e fim no mesmo dia com horários diferentes.
     """
+    print(f"🔥 [BATCH_UPDATE] Iniciando com {len(tasks_to_update)} tarefas.")
     try:
-        results = await ticktick.batch_update_tasks(tasks_to_update)
-        return f"✅ Processadas {len(results)} atualizações no TickTick."
+        normalized = []
+        for t in tasks_to_update:
+            item = t.copy()
+            if "project_id" in item: item["projectId"] = item.pop("project_id")
+            
+            # Normalização de Datas (Time Blocking Support)
+            final_due = item.pop("due_date", None)
+            final_start = item.pop("start_date", None)
+
+            if final_due:
+                # Garante fuso horário BR
+                if "Z" not in final_due and "-" not in final_due[10:]: final_due += "-0300"
+                item["dueDate"] = final_due
+                
+                # Se a IA não definiu um início, o início é igual ao fim (sem duração)
+                if not final_start:
+                    item["startDate"] = final_due
+                else:
+                    if "Z" not in final_start and "-" not in final_start[10:]: final_start += "-0300"
+                    item["startDate"] = final_start
+
+            normalized.append(item)
+            
+        results = await ticktick.batch_update_tasks(normalized)
+        successes = [r for r in results if r.get("status") == 200]
+        return f"✅ Processadas {len(results)} atualizações. Sucessos: {len(successes)}."
     except Exception as e:
-        return f"❌ Erro no lote de atualização: {str(e)}"
+        return f"❌ Erro no motor de lote: {str(e)}"
 
 @tool
 async def create_ticktick_project(name: str, color: str = None, view_mode: str = "list"):
+
+
 
     """Cria um novo projeto (lista) no TickTick via API REST."""
     print(f"DEBUG [create_ticktick_project]: {name}")
@@ -174,18 +177,31 @@ async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
     """
     Lista tarefas pendentes. 
     date_filter: 'YYYY-MM-DD'.
-    project_id: Opcional. Filtra por um projeto específico.
+    Retorna uma lista de tarefas com metadados essenciais para edição (ID, Título, Projeto).
     """
     print(f"DEBUG [get_ticktick_tasks]: Filtro={date_filter}, Projeto={project_id}")
     try:
         tasks = await ticktick.get_tasks(project_id=project_id)
         if not tasks: return "Nenhuma tarefa pendente encontrada."
+        
+        # Filtro de data
         if date_filter:
             tasks = [t for t in tasks if t.get('dueDate') and date_filter in t['dueDate']]
         
         if not tasks: return f"Nenhuma tarefa pendente para a data {date_filter}."
         
-        return "\n".join([f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}]" for t in tasks])
+        # Limita a 40 tarefas para não estourar contexto da IA
+        display_tasks = tasks[:40]
+        # Retornamos uma estrutura que a IA possa parsear facilmente
+        result = "\n".join([
+            f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}, Proj: {t['projectId']}]" 
+            for t in display_tasks
+        ])
+        
+        if len(tasks) > 40:
+            result += f"\n\n... e mais {len(tasks) - 40} tarefas não listadas por brevidade."
+            
+        return result
     except Exception as e:
         return f"❌ Erro ao buscar tarefas: {str(e)}"
 
@@ -201,12 +217,12 @@ async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
     except Exception as e: return f"❌ Erro MCP: {str(e)}"
 
 @tool
-async def batch_ticktick_tasks(tasks_list: List[Dict[str, Any]]):
-    """Cria múltiplas tarefas em lote via MCP."""
+async def batch_create_ticktick_tasks(tasks_list: List[Dict[str, Any]]):
+    """Cria múltiplas tarefas em lote no TickTick."""
     try:
         result = await ticktick.call_mcp_tool("batch_add_tasks", {"tasks": tasks_list})
-        return f"✅ {len(tasks_list)} tarefas criadas via lote."
-    except Exception as e: return f"❌ Erro lote: {str(e)}"
+        return f"✅ {len(tasks_list)} tarefas criadas."
+    except Exception as e: return f"❌ Erro lote criação: {str(e)}"
 
 # --- Ferramentas de Lembrete ---
 
@@ -232,7 +248,7 @@ async def list_active_reminders(user_id: str):
     except Exception as e:
         return f"❌ Erro ao listar lembretes: {str(e)}"
 
-# --- Ferramentas de Pesquisa Web ---
+# --- Ferramentas Web Search ---
 
 @tool
 async def web_search(query: str):
@@ -265,11 +281,11 @@ tools = [
     move_obsidian_item, cleanup_empty_obsidian_folders, list_obsidian_notes,
     get_obsidian_note_details, get_obsidian_note_content, sync_obsidian_knowledge,
     create_ticktick_task, 
-    update_ticktick_task,
     create_ticktick_project, 
     get_ticktick_tasks,
     get_ticktick_metrics_via_mcp, 
-    batch_ticktick_tasks,
+    batch_create_ticktick_tasks,
+    batch_update_ticktick_tasks,
     set_reminder, list_active_reminders,
     web_search, deep_research
 ]
@@ -277,7 +293,7 @@ tool_node = ToolNode(tools)
 
 class MaeveAgent:
     def __init__(self, checkpointer=None, model_name: str = "gpt-4o-mini"):
-        self.llm = ChatOpenAI(model=model_name, temperature=0).bind_tools(tools)
+        self.llm = ChatOpenAI(model=model_name, temperature=0, max_tokens=2048).bind_tools(tools)
         self._graph = self._build_graph(checkpointer)
 
     def _build_graph(self, checkpointer):

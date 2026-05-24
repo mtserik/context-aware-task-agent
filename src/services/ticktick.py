@@ -1,6 +1,7 @@
 import os
 import httpx
 import json
+import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
@@ -168,9 +169,7 @@ class TickTickService:
 
     async def batch_update_tasks(self, tasks_to_update: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Atualiza múltiplas tarefas no TickTick. 
-        Note: A API Aberta oficial não tem um endpoint de batch update real para campos variados,
-        então usamos paralelismo controlado para otimizar.
+        Atualiza múltiplas tarefas no TickTick de forma sequencial controlada.
         """
         if not self.access_token:
             raise Exception("Access Token não configurado.")
@@ -179,15 +178,40 @@ class TickTickService:
         results = []
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            async def update_one(task_data):
-                t_id = task_data.pop("task_id")
+            print(f"🚀 Iniciando processamento de {len(tasks_to_update)} tarefas...")
+            
+            for task_data in tasks_to_update:
+                # Extração segura do ID (tenta todas as variações comuns)
+                t_id = task_data.get("task_id") or task_data.get("id") or task_data.get("taskId")
+                
+                if not t_id:
+                    print(f"⚠️ Tarefa ignorada por falta de ID: {task_data}")
+                    continue
+                
                 try:
-                    resp = await client.post(f"{self.base_url}/task/{t_id}", json=task_data, headers=headers)
-                    return {"task_id": t_id, "status": resp.status_code}
-                except Exception as e:
-                    return {"task_id": t_id, "error": str(e)}
+                    url = f"{self.base_url}/task/{t_id}"
+                    # O TickTick exige ID, projectId e title no BODY também
+                    payload = {k: v for k, v in task_data.items() if v is not None and k not in ["task_id", "id", "taskId"]}
+                    payload["id"] = t_id # A API exige o ID no body com a chave 'id'
 
-            results = await asyncio.gather(*[update_one(t) for t in tasks_to_update])
+                    print(f"DEBUG [TickTick Batch]: Enviando para {t_id}: {json.dumps(payload)}")
+                    resp = await client.post(url, json=payload, headers=headers)
+                    print(f"DEBUG [TickTick Batch]: Resposta {t_id} ({resp.status_code}): {resp.text}")
+
+                    results.append({"task_id": t_id, "status": resp.status_code})
+                    
+                    if resp.status_code != 200:
+                        print(f"❌ Erro TickTick {t_id}: {resp.status_code} - {resp.text}")
+                    
+                    # Delay mínimo para estabilidade
+                    if len(tasks_to_update) > 5:
+                        await asyncio.sleep(0.2) 
+                        
+                except Exception as e:
+                    print(f"❌ Exceção na tarefa {t_id}: {e}")
+                    results.append({"task_id": t_id, "error": str(e)})
+
+            print(f"✅ Lote finalizado: {len(results)} processadas.")
         return results
 
     # --- Métodos MCP (Analítico & Métricas via JSON-RPC over HTTP) ---
