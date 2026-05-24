@@ -25,8 +25,15 @@ COPY requirements.txt .
 # Step 6: Install the Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Step 7: Expose the port FastAPI will run on
+# Step 7: Copy the application code
+COPY . .
+
+# Step 8: Set PYTHONPATH to include the /app directory
+ENV PYTHONPATH=/app
+
+# Step 9: Expose the port FastAPI will run on
 EXPOSE 8000
 
-# Step 8: Define the default command to run the application using Uvicorn
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Step 10: Run the application
+# Nota: Removido --reload para produção
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
