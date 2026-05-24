@@ -45,29 +45,77 @@ class TickTickService:
 
     # --- Métodos API REST (Operacional) ---
 
-    async def get_tasks(self) -> List[Dict[str, Any]]:
-        """Lista as tarefas pendentes de todos the projetos do usuário."""
+    async def get_tasks(self, project_id: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Lista as tarefas pendentes usando o endpoint de filtragem global (mais eficiente).
+        """
         if not self.access_token:
             raise Exception("Access Token não configurado.")
 
         headers = {"Authorization": f"Bearer {self.access_token}"}
-        all_tasks = []
+        
+        # Payload para o filtro global
+        # status: [0] = pendentes
+        payload = {"status": [0]}
+        
+        if project_id:
+            payload["projectIds"] = [project_id]
+        
+        # Se quisermos filtrar por data no servidor (ex: atrasadas/hoje)
+        if end_date:
+            payload["endDate"] = end_date # Formato: yyyy-MM-dd'T'HH:mm:ssZ
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            # Usamos o endpoint de filtro para evitar iterar por cada projeto
+            response = await client.post(f"{self.base_url}/task/filter", json=payload, headers=headers)
+            
+            if response.status_code == 200:
+                tasks = response.json()
+                print(f"DEBUG [TickTick]: {len(tasks)} tarefas pendentes encontradas via filtro global.")
+                return tasks
+            else:
+                # Fallback para o método de projeto se o filtro falhar (algumas contas/versões da API)
+                print(f"⚠️ Filtro global falhou ({response.status_code}). Usando fallback por projeto...")
+                return await self._get_tasks_fallback(project_id)
+
+    async def _get_tasks_fallback(self, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Método de fallback caso o filtro global não esteja disponível."""
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            if project_id:
+                resp = await client.get(f"{self.base_url}/project/{project_id}/data", headers=headers)
+                return resp.json().get("tasks", []) if resp.status_code == 200 else []
+
+            proj_response = await client.get(f"{self.base_url}/project", headers=headers)
+            if proj_response.status_code != 200: return []
+            
+            projects = proj_response.json()
+            all_tasks = []
+            
+            async def fetch_project_tasks(p_id):
+                try:
+                    resp = await client.get(f"{self.base_url}/project/{p_id}/data", headers=headers)
+                    return resp.json().get("tasks", []) if resp.status_code == 200 else []
+                except: return []
+
+            results = await asyncio.gather(*[fetch_project_tasks(p.get("id")) for p in projects[:20]])
+            for t in results: all_tasks.extend(t)
+            return all_tasks
+
+    async def create_project(self, name: str, color: str = None, view_mode: str = "list") -> Dict[str, Any]:
+        """Cria um novo projeto no TickTick."""
+        if not self.access_token:
+            raise Exception("Access Token não configurado.")
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        payload = {"name": name, "viewMode": view_mode}
+        if color: payload["color"] = color
 
         async with httpx.AsyncClient() as client:
-            proj_response = await client.get(f"{self.base_url}/project", headers=headers)
-            if proj_response.status_code != 200:
-                raise Exception(f"Erro ao buscar projetos: {proj_response.text}")
-
-            projects = proj_response.json()
-            for project in projects:
-                proj_id = project.get("id")
-                task_response = await client.get(f"{self.base_url}/project/{proj_id}/data", headers=headers)
-                if task_response.status_code == 200:
-                    project_data = task_response.json()
-                    tasks = project_data.get("tasks", [])
-                    all_tasks.extend(tasks)
-
-        return all_tasks
+            response = await client.post(f"{self.base_url}/project", json=payload, headers=headers)
+            if response.status_code == 200:
+                return response.json()
+            raise Exception(f"Erro ao criar projeto: {response.text}")
 
     async def create_task(
         self, 
@@ -109,13 +157,7 @@ class TickTickService:
             raise Exception("Access Token não configurado.")
 
         headers = {"Authorization": f"Bearer {self.access_token}"}
-        # O TickTick exige o projectId para atualizar tarefas via Open API se não for a Inbox.
-        # Como o task_id é global, mas o endpoint exige cautela, buscamos a tarefa se necessário 
-        # ou enviamos o payload direto.
-        
         async with httpx.AsyncClient() as client:
-            # Primeiro precisamos saber o projectId dessa tarefa (exigência da API TickTick para POST /task/{id})
-            # Simplificação: A API permite POST em /open/v1/task/{id}
             url = f"{self.base_url}/task/{task_id}"
             response = await client.post(url, json=kwargs, headers=headers)
             
@@ -123,6 +165,30 @@ class TickTickService:
                 return response.json()
             else:
                 raise Exception(f"Erro ao atualizar tarefa {task_id}: {response.text}")
+
+    async def batch_update_tasks(self, tasks_to_update: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Atualiza múltiplas tarefas no TickTick. 
+        Note: A API Aberta oficial não tem um endpoint de batch update real para campos variados,
+        então usamos paralelismo controlado para otimizar.
+        """
+        if not self.access_token:
+            raise Exception("Access Token não configurado.")
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        results = []
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async def update_one(task_data):
+                t_id = task_data.pop("task_id")
+                try:
+                    resp = await client.post(f"{self.base_url}/task/{t_id}", json=task_data, headers=headers)
+                    return {"task_id": t_id, "status": resp.status_code}
+                except Exception as e:
+                    return {"task_id": t_id, "error": str(e)}
+
+            results = await asyncio.gather(*[update_one(t) for t in tasks_to_update])
+        return results
 
     # --- Métodos MCP (Analítico & Métricas via JSON-RPC over HTTP) ---
 

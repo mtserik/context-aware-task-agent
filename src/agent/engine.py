@@ -14,6 +14,7 @@ from src.services.ticktick import TickTickService
 from src.services.obsidian import ObsidianService
 from src.services.database import DatabaseService
 from src.services.search import SearchService
+from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE
 
 # --- Inicialização dos Serviços ---
 ticktick = TickTickService()
@@ -130,7 +131,7 @@ async def update_ticktick_task(
 ):
     """
     Atualiza uma tarefa existente no TickTick.
-    task_id: OBRIGATÓRIO. Busque usando get_ticktick_tasks antes.
+    task_id: OBRIGATÓRIO.
     status: 0 (pendente), 2 (concluída).
     """
     print(f"DEBUG [update_ticktick_task]: ID={task_id}, Título={title}")
@@ -147,7 +148,20 @@ async def update_ticktick_task(
     except Exception as e: return f"❌ Erro ao atualizar: {str(e)}"
 
 @tool
+async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
+    """
+    Atualiza múltiplas tarefas de uma vez.
+    Formato esperado: [{"task_id": "id", "due_date": "...", "status": 0}, ...]
+    """
+    try:
+        results = await ticktick.batch_update_tasks(tasks_to_update)
+        return f"✅ Processadas {len(results)} atualizações no TickTick."
+    except Exception as e:
+        return f"❌ Erro no lote de atualização: {str(e)}"
+
+@tool
 async def create_ticktick_project(name: str, color: str = None, view_mode: str = "list"):
+
     """Cria um novo projeto (lista) no TickTick via API REST."""
     print(f"DEBUG [create_ticktick_project]: {name}")
     try:
@@ -156,14 +170,24 @@ async def create_ticktick_project(name: str, color: str = None, view_mode: str =
     except Exception as e: return f"❌ Erro: {str(e)}"
 
 @tool
-async def get_ticktick_tasks(date_filter: str = None):
-    """Lista tarefas pendentes. date_filter: 'YYYY-MM-DD'."""
-    print(f"DEBUG [get_ticktick_tasks]: Filtro={date_filter}")
-    tasks = await ticktick.get_tasks()
-    if not tasks: return "Nenhuma tarefa pendente."
-    if date_filter:
-        tasks = [t for t in tasks if t.get('dueDate') and date_filter in t['dueDate']]
-    return "\n".join([f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}]" for t in tasks])
+async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
+    """
+    Lista tarefas pendentes. 
+    date_filter: 'YYYY-MM-DD'.
+    project_id: Opcional. Filtra por um projeto específico.
+    """
+    print(f"DEBUG [get_ticktick_tasks]: Filtro={date_filter}, Projeto={project_id}")
+    try:
+        tasks = await ticktick.get_tasks(project_id=project_id)
+        if not tasks: return "Nenhuma tarefa pendente encontrada."
+        if date_filter:
+            tasks = [t for t in tasks if t.get('dueDate') and date_filter in t['dueDate']]
+        
+        if not tasks: return f"Nenhuma tarefa pendente para a data {date_filter}."
+        
+        return "\n".join([f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}]" for t in tasks])
+    except Exception as e:
+        return f"❌ Erro ao buscar tarefas: {str(e)}"
 
 @tool
 async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
@@ -276,27 +300,16 @@ class MaeveAgent:
         context_docs = await vector_db.search_context(last_query) if last_query else []
         context_str = "\n".join([f"- {doc['metadata'].get('title')}: {doc['content'][:200]}" for doc in context_docs])
         
-        now = datetime.now()
-        system_content = (
-            f"Você é a Maeve, uma assistente pessoal inteligente e nativa do Brasil. Data/Hora atual: {now.strftime('%Y-%m-%d %H:%M')}.\n"
-            f"IDENTIDADE: Seu user_id é '{user_id}' e o chat_id atual é '{chat_id}'.\n"
-            "PERSONALIDADE & IDIOMA:\n"
-            "1. Responda SEMPRE em Português do Brasil de forma natural, clara e profissional.\n"
-            "2. FORMATAÇÃO TELEGRAM: Use Markdown simplificado:\n"
-            "   - Use *negrito* para ênfase.\n"
-            "   - Use `código` para IDs, datas ou comandos.\n"
-            "   - Use listas com '-' de forma limpa.\n"
-            "   - EVITE tabelas complexas ou Markdown denso que quebre no celular.\n"
-            "3. Como suas respostas são lidas por um motor de síntese de voz (TTS), escreva de forma fluida e evite pontuações excessivas.\n"
-            "REGRAS DE OURO:\n"
-            "1. PESQUISA WEB: Use `web_search` para fatos rápidos/recentes e `deep_research` para análises complexas ou quando solicitado explicitamente.\n"
-            "2. FORMATO DE DATA: Use SEMPRE 'YYYY-MM-DDTHH:MM:SS-0300'.\n"
-            f"   - Exemplo (Amanhã às 09h): '{(now + timedelta(days=1)).strftime('%Y-%m-%d')}T09:00:00-0300'.\n"
-            "3. LEMBRETES: Use `set_reminder` para agendar avisos proativos. Passe sempre seu user_id e chat_id.\n"
-            "4. SEQUENCIAMENTO: Para subtarefas TickTick, crie o PAI primeiro, pegue o ID, e em um novo turno crie as FILHAS.\n"
-            "5. EDIÇÃO: Use `update_ticktick_task` com o ID obtido via `get_ticktick_tasks`.\n"
-            f"Contexto:\n{context_str}"
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        
+        # Usa o template centralizado de prompts
+        system_content = SYSTEM_PROMPT_TEMPLATE.format(
+            now=now,
+            user_id=user_id,
+            chat_id=chat_id,
+            obsidian_context=context_str
         )
+        
         return {"messages": [await self.llm.ainvoke([SystemMessage(content=system_content)] + state['messages'])]}
 
     async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):

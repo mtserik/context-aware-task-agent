@@ -144,13 +144,18 @@ class TelegramService:
                         icon = "🌐" if tool_name == "web_search" else "🧠"
                         status_msg = await update.message.reply_text(f"{icon} _Pesquisando na web..._", parse_mode="Markdown")
                 
-                # Captura a resposta final (geralmente no final do grafo)
+                # Captura conteúdo parcial ou final do modelo
+                elif kind == "on_chat_model_stream":
+                    content = event.get("data", {}).get("chunk", {}).content
+                    if content:
+                        final_response += content
+                
                 elif kind == "on_chat_model_end":
-                    # Pega o conteúdo da última mensagem gerada pelo modelo
-                    # Nota: O astream_events retorna metadados ricos aqui
-                    output = event.get("data", {}).get("output")
-                    if output and hasattr(output, "content"):
-                        final_response = output.content
+                    # Fallback caso o stream não tenha preenchido (alguns modelos/configurações)
+                    if not final_response:
+                        output = event.get("data", {}).get("output")
+                        if output and hasattr(output, "content"):
+                            final_response = output.content
 
             # 2. Limpeza do status
             if status_msg:
