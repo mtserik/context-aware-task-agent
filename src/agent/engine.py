@@ -374,70 +374,103 @@ tools = [
 tool_node = ToolNode(tools)
 
 class MaeveAgent:
-    def __init__(self, checkpointer=None, model_name: str = "gpt-4o-mini"):
-        self.llm = ChatOpenAI(model=model_name, temperature=0, max_tokens=2048).bind_tools(tools)
+    def __init__(self, checkpointer=None):
+        # Modelos disponíveis
+        self.fast_model = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=2048).bind_tools(tools)
+        self.smart_model = ChatOpenAI(model="gpt-4o", temperature=0, max_tokens=4096).bind_tools(tools)
+        
+        # O grafo agora inclui roteamento
         self._graph = self._build_graph(checkpointer)
 
     def _build_graph(self, checkpointer):
         workflow = StateGraph(AgentState)
+        
+        # Nós principais
+        workflow.add_node("router", self._router_node)
         workflow.add_node("call_model", self._call_model_node)
         workflow.add_node("tools", tool_node)
-        workflow.set_entry_point("call_model")
+        
+        # Fluxo: Começa pelo Router que decide a "inteligência" necessária
+        workflow.set_entry_point("router")
+        workflow.add_edge("router", "call_model")
+        
+        # Loop de ferramentas padrão
         workflow.add_conditional_edges("call_model", lambda x: "tools" if x['messages'][-1].tool_calls else END)
         workflow.add_edge("tools", "call_model")
+        
         return workflow.compile(checkpointer=checkpointer)
+
+    async def _router_node(self, state: AgentState):
+        """
+        Analisa o pedido do usuário e decide se precisamos do motor Fast ou Smart.
+        """
+        last_msg = next((m for m in reversed(state['messages']) if isinstance(m, HumanMessage)), None)
+        if not last_msg:
+            return {"routing_metadata": {"model": "fast", "reason": "No human message"}}
+
+        # Prompt rápido para classificação
+        routing_prompt = f"""
+        Analise o pedido abaixo e classifique a complexidade de 1 a 5:
+        1-2: Simples (Saudações, perguntas curtas, listar algo, criar 1 tarefa simples).
+        3-5: Complexo (Criar estruturas de tarefas/subtarefas, resumir várias notas, lógica multi-passos, planejamento).
+        
+        Responda APENAS em JSON: {{"complexity": int, "model": "fast"|"smart", "reason": "string"}}
+        
+        Pedido: {last_msg.content}
+        """
+        
+        try:
+            # Usamos o gpt-4o-mini sempre para rotear (é rápido e barato)
+            raw_decision = await ChatOpenAI(model="gpt-4o-mini", temperature=0).ainvoke(routing_prompt)
+            # Limpeza básica do JSON caso o modelo retorne Markdown
+            clean_json = raw_decision.content.replace("```json", "").replace("```", "").strip()
+            decision = json.loads(clean_json)
+            
+            print(f"🧠 [Router]: Complexidade {decision['complexity']} -> Usando {decision['model'].upper()} ({decision['reason']})")
+            return {"routing_metadata": decision}
+        except Exception as e:
+            print(f"⚠️ Erro no Router: {e}. Defaulting to Fast.")
+            return {"routing_metadata": {"model": "fast", "reason": "Fallback due to error"}}
 
     async def _call_model_node(self, state: AgentState):
         from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
         
-        # 1. Trimming e Limpeza de Mensagens
-        raw_messages = state['messages']
+        # 1. Escolha do Modelo baseado no Roteamento
+        routing = state.get("routing_metadata") or {"model": "fast"}
+        llm = self.smart_model if routing.get("model") == "smart" else self.fast_model
         
-        # Garantimos que a história enviada ao modelo esteja SEMPRE íntegra
-        # OpenAI exige: AIMessage(tool_calls) -> ToolMessage(s)
+        # 2. Trimming e Limpeza de Mensagens
+        raw_messages = state['messages']
         
         def get_valid_sequence(msgs, limit=20):
             if len(msgs) <= limit:
                 return msgs
-            
-            # Pega o corte inicial
             subset = msgs[-limit:]
-            
-            # Regra 1: Se a primeira mensagem do subset for ToolMessage, precisamos voltar até achar o AIMessage dela
             while subset and isinstance(subset[0], ToolMessage):
                 limit += 1
                 subset = msgs[-limit:]
-            
-            # Regra 2: Se a última mensagem for AIMessage com tool_calls, o modelo vai quebrar (espera ToolMessage)
-            # Mas como estamos no node 'call_model', se a última mensagem tiver tool_calls, 
-            # o LangGraph deveria ter passado pelo node 'tools'. Se caiu aqui, algo falhou.
-            # Vamos remover tool_calls órfãos no final por segurança.
             if subset and isinstance(subset[-1], AIMessage) and subset[-1].tool_calls:
                 subset = subset[:-1]
-                
             return subset
 
         trimmed_messages = get_valid_sequence(raw_messages, limit=20)
 
-        # 2. Validação de Sequência (Remoção de Órfãos no meio da história)
-        # Se houver um AIMessage com tool_calls e a próxima NÃO for um ToolMessage, o OpenAI rejeita.
+        # 3. Sanitização de Histórico (Cura contra erros 400)
         final_messages = []
         i = 0
         while i < len(trimmed_messages):
             msg = trimmed_messages[i]
             if isinstance(msg, AIMessage) and msg.tool_calls:
-                # Verifica se a próxima é ToolMessage
                 if i + 1 < len(trimmed_messages) and isinstance(trimmed_messages[i+1], ToolMessage):
                     final_messages.append(msg)
                 else:
-                    # Órfão: ignora as tool_calls para não quebrar o histórico
-                    msg_clean = AIMessage(content=msg.content or "Processando ferramentas...")
+                    msg_clean = AIMessage(content=msg.content or "Processando...", tool_calls=[])
                     final_messages.append(msg_clean)
             else:
                 final_messages.append(msg)
             i += 1
 
-        # 3. Extração de Contexto
+        # 4. Contexto
         user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
         user_id = user_msg.additional_kwargs.get("user_id", "unknown") if user_msg else "unknown"
         chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
@@ -469,19 +502,18 @@ class MaeveAgent:
             obsidian_context=context_str
         )
         
-        # 4. Invocação
+        # 5. Invocação
         history = [m for m in final_messages if not isinstance(m, SystemMessage)]
         
         try:
-            response = await self.llm.ainvoke([SystemMessage(content=system_content)] + history)
+            response = await llm.ainvoke([SystemMessage(content=system_content)] + history)
             return {"messages": [response]}
         except Exception as e:
             print(f"❌ Erro OpenAI: {e}")
             if "400" in str(e):
-                # Fallback extremo: Apenas o último pedido do usuário e o sistema
                 last_human = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)
                 fallback_history = [last_human] if last_human else []
-                return {"messages": [await self.llm.ainvoke([SystemMessage(content=system_content)] + fallback_history)]}
+                return {"messages": [await llm.ainvoke([SystemMessage(content=system_content)] + fallback_history)]}
             raise e
 
     async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):
