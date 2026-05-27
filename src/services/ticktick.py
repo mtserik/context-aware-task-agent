@@ -131,11 +131,23 @@ class TickTickService:
         if not self.access_token:
             raise Exception("Access Token não configurado.")
 
-        # FALLBACK: Se não houver project_id, tenta achar o 'Inbox' de forma inteligente
+        # HERANÇA DE PROJETO PARA SUBTAREFAS:
+        # Se for uma subtarefa (tem parent_id) e não veio project_id, herda do pai
+        if parent_id and not project_id:
+            try:
+                print(f"ℹ️ [TickTick] Subtarefa detectada. Buscando projeto do pai ({parent_id})...")
+                parent_details = await self.get_task_by_id(parent_id)
+                if parent_details and 'projectId' in parent_details:
+                    project_id = parent_details['projectId']
+                    print(f"✅ [TickTick] Projeto '{project_id}' herdado do pai.")
+            except Exception as e:
+                print(f"⚠️ Erro ao herdar projeto do pai: {e}")
+
+        # FALLBACK: Se não houver project_id após a herança, tenta achar o 'Inbox' inteligente
         if not project_id:
             try:
                 projects = await self.list_projects()
-                # Busca por 'Inbox' ou 'Entrada' (comum em PT-BR) de forma insensível a maiúsculas
+                # Busca por 'Inbox' ou 'Entrada' de forma insensível a maiúsculas
                 inbox = None
                 for p in projects:
                     name_lower = p.get('name', '').lower()
@@ -143,7 +155,6 @@ class TickTickService:
                         inbox = p
                         break
                 
-                # Se ainda não achou, pega o primeiro projeto da lista
                 if not inbox and projects:
                     inbox = projects[0]
                 
