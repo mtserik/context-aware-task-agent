@@ -334,6 +334,20 @@ async def deep_research(query: str):
     synthesis = await search_service.deep_research(query)
     return f"Síntese da Pesquisa Aprofundada:\n{synthesis}"
 
+@tool
+async def verify_task_creation(task_id: str):
+    """
+    Verifica se uma tarefa recém-criada realmente existe e em qual projeto ela caiu.
+    Use se você criou algo mas não tem certeza se deu certo.
+    """
+    try:
+        details = await ticktick.get_task_by_id(task_id)
+        if details and 'id' in details:
+            return f"✅ Tarefa confirmada! Ela está no projeto ID: {details.get('projectId')} com o título: '{details.get('title')}'"
+        return "❌ A tarefa não foi encontrada no servidor após a criação."
+    except Exception as e:
+        return f"❌ Erro na verificação: {str(e)}"
+
 tools = [
     create_obsidian_note, list_obsidian_folders, delete_obsidian_item, 
     move_obsidian_item, cleanup_empty_obsidian_folders, list_obsidian_notes,
@@ -344,6 +358,7 @@ tools = [
     get_ticktick_item_details,
     delete_ticktick_item,
     list_ticktick_structure,
+    verify_task_creation,
     get_ticktick_metrics_via_mcp, 
     batch_create_ticktick_tasks,
     batch_update_ticktick_tasks,
