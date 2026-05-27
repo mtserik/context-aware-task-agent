@@ -316,11 +316,28 @@ class MaeveAgent:
         context_docs = await vector_db.search_context(last_query) if last_query else []
         context_str = "\n".join([f"- {doc['metadata'].get('title')}: {doc['content'][:200]}" for doc in context_docs])
         
-        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        # --- Cálculo de Contexto Temporal ---
+        now_dt = datetime.now()
+        date_str = now_dt.strftime('%d/%m/%Y')
+        time_str = now_dt.strftime('%H:%M')
         
+        # Dia da semana em Português
+        dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+        day_of_week = dias[now_dt.weekday()]
+        
+        # Período do dia
+        hour = now_dt.hour
+        if 5 <= hour < 12: period = "manhã"
+        elif 12 <= hour < 18: period = "tarde"
+        elif 18 <= hour < 24: period = "noite"
+        else: period = "madrugada"
+
         # Usa o template centralizado de prompts
         system_content = SYSTEM_PROMPT_TEMPLATE.format(
-            now=now,
+            date=date_str,
+            time=time_str,
+            day_of_week=day_of_week,
+            period=period,
             user_id=user_id,
             chat_id=chat_id,
             obsidian_context=context_str

@@ -111,6 +111,11 @@ containerized-llm-agent/
 ### Fase 3: Inteligência Avançada & Otimização (Próximo Passo 🚀)
 *   **[🚀] Roteamento de Modelos:** Lógica dinâmica para alternar entre GPT-4o-mini (rápido/barato) e GPT-4o (complexo/deep reasoning) conforme a carga cognitiva da tarefa.
 *   **[✅] Infraestrutura Obsidian (Cloud):** Resolver timeouts de sincronização no Railway implementando **Railway Volumes** para manter o Vault clonado permanentemente, eliminando a necessidade de re-clonar no startup. Implementada estratégia de `git init` para compatibilidade com volumes.
+*   **[✅] Consciência Temporal:** Injeção dinâmica de data, hora, dia da semana e período do dia para saudações e priorização contextual.
+*   **[🚀] Naturalidade & Personalidade:**
+    *   **Memória de Humor:** Detecção de sentimento nas últimas mensagens para ajuste automático de tom (Empatia Contextual).
+    *   **Proatividade de Follow-up:** Perguntas inteligentes sobre eventos passados no dia do Erik (ex: "Como foi a reunião das 14h?").
+    *   **Variação de Energia:** Tom mais técnico em horário comercial e mais reflexivo/relaxado à noite.
 *   **[ ] Visão Computacional:** Processamento de imagens e fotos via Telegram para extração de insights no Obsidian.
 *   **[ ] Multi-agente:** Especialização de tarefas entre sub-agentes coordenados pela Maeve.
 
