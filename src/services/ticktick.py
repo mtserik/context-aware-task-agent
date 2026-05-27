@@ -131,6 +131,18 @@ class TickTickService:
         if not self.access_token:
             raise Exception("Access Token não configurado.")
 
+        # FALLBACK: Se não houver project_id, tenta achar o 'Inbox'
+        if not project_id:
+            try:
+                projects = await self.list_projects()
+                # Procura por Inbox ou o primeiro projeto disponível
+                inbox = next((p for p in projects if p.get('name') == 'Inbox'), projects[0] if projects else None)
+                if inbox:
+                    project_id = inbox.get('id')
+                    print(f"ℹ️ [TickTick] Nenhum projeto enviado. Usando fallback: {inbox.get('name')} ({project_id})")
+            except Exception as e:
+                print(f"⚠️ Erro ao buscar Inbox fallback: {e}")
+
         headers = {"Authorization": f"Bearer {self.access_token}"}
         payload = {
             "title": title, 
@@ -142,14 +154,16 @@ class TickTickService:
         if project_id:
             payload["projectId"] = project_id
         if parent_id:
-            # Na API do TickTick, subtarefas são criadas enviando o parentId
             payload["parentId"] = parent_id
 
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{self.base_url}/task", json=payload, headers=headers)
             if response.status_code == 200:
-                return response.json()
+                res_data = response.json()
+                print(f"✅ [TickTick API] Tarefa criada com sucesso: {res_data.get('id')}")
+                return res_data
             else:
+                print(f"❌ [TickTick API] Erro na criação: {response.status_code} - {response.text}")
                 raise Exception(f"Erro ao criar tarefa via API: {response.text}")
 
     async def update_task(self, task_id: str, **kwargs) -> Dict[str, Any]:
