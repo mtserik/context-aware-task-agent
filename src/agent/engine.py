@@ -110,14 +110,13 @@ async def create_ticktick_task(
     """
     Cria uma tarefa ou subtarefa no TickTick.
     
-    PRIORIDADES (Use exatamente estes números):
-    0: Nenhuma / Baixíssima
-    1: Baixa
-    3: MÉDIA (Padrão para pedidos normais)
-    5: ALTA (Urgente/Importante)
+    PRIORIDADES: 0: Nenhuma, 1: Baixa, 3: MÉDIA, 5: ALTA.
     
-    SUBTAREFAS: Se for criar subtarefas, você DEVE primeiro criar a tarefa pai, 
-    receber o ID dela, e só então chamar esta ferramenta novamente para as filhas passando o parent_id.
+    SEQUÊNCIA OBRIGATÓRIA PARA SUBTAREFAS:
+    1. Primeiro, chame esta ferramenta para criar a TAREFA PAI (deixe parent_id como None).
+    2. PEGUE O ID retornado (ID_CRIADO: ...).
+    3. Chame esta ferramenta NOVAMENTE para cada subtarefa, passando o ID do pai no campo 'parent_id'.
+    NÃO tente criar pai e filhos na mesma chamada de ferramenta.
     """
     print(f"DEBUG [create_ticktick_task]: {title}, Priority={priority}, Parent={parent_id}")
     try:
