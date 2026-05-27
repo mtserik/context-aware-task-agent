@@ -364,9 +364,26 @@ class MaeveAgent:
         return workflow.compile(checkpointer=checkpointer)
 
     async def _call_model_node(self, state: AgentState):
-        from langchain_core.messages import SystemMessage, HumanMessage
-        # Extrair user_id e chat_id das mensagens (se disponíveis)
-        user_msg = next((m for m in reversed(state['messages']) if isinstance(m, HumanMessage)), None)
+        from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
+        
+        # 1. Limpeza e Trimming de Mensagens (Garante que a história não cresça infinitamente)
+        # Mantemos as últimas 20 mensagens para contexto, mas preservamos a lógica de ferramentas
+        raw_messages = state['messages']
+        if len(raw_messages) > 30:
+            # Estratégia de corte: mantém as últimas 20, mas garante que não cortamos no meio de um tool call
+            # Se a mensagem mais antiga que sobrar for um ToolMessage, precisamos do AssistantMessage anterior
+            trimmed_messages = raw_messages[-20:]
+            if isinstance(trimmed_messages[0], ToolMessage):
+                # Tenta achar o início do bloco de ferramentas
+                idx = len(raw_messages) - 20
+                while idx > 0 and (isinstance(raw_messages[idx], ToolMessage) or (isinstance(raw_messages[idx], AIMessage) and raw_messages[idx].tool_calls)):
+                    idx -= 1
+                trimmed_messages = raw_messages[idx:]
+        else:
+            trimmed_messages = raw_messages
+
+        # 2. Extração de Contexto
+        user_msg = next((m for m in reversed(trimmed_messages) if isinstance(m, HumanMessage)), None)
         user_id = user_msg.additional_kwargs.get("user_id", "unknown") if user_msg else "unknown"
         chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
 
@@ -379,18 +396,15 @@ class MaeveAgent:
         date_str = now_dt.strftime('%d/%m/%Y')
         time_str = now_dt.strftime('%H:%M')
         
-        # Dia da semana em Português
         dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
         day_of_week = dias[now_dt.weekday()]
         
-        # Período do dia
         hour = now_dt.hour
         if 5 <= hour < 12: period = "manhã"
         elif 12 <= hour < 18: period = "tarde"
         elif 18 <= hour < 24: period = "noite"
         else: period = "madrugada"
 
-        # Usa o template centralizado de prompts
         system_content = SYSTEM_PROMPT_TEMPLATE.format(
             date=date_str,
             time=time_str,
@@ -401,7 +415,21 @@ class MaeveAgent:
             obsidian_context=context_str
         )
         
-        return {"messages": [await self.llm.ainvoke([SystemMessage(content=system_content)] + state['messages'])]}
+        # 3. Execução do Modelo
+        # Filtramos mensagens de sistema antigas para não duplicar no prompt
+        filtered_messages = [m for m in trimmed_messages if not isinstance(m, SystemMessage)]
+        
+        try:
+            response = await self.llm.ainvoke([SystemMessage(content=system_content)] + filtered_messages)
+            return {"messages": [response]}
+        except Exception as e:
+            print(f"❌ Erro crítico no modelo: {e}")
+            # Se falhar por contexto, tenta uma versão mínima
+            if "context" in str(e).lower() or "400" in str(e):
+                print("⚠️ Tentando fallback com histórico mínimo...")
+                response = await self.llm.ainvoke([SystemMessage(content=system_content)] + filtered_messages[-5:])
+                return {"messages": [response]}
+            raise e
 
     async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):
         """Versão que retorna o stream de eventos para detecção de ferramentas."""
