@@ -175,9 +175,10 @@ async def create_ticktick_project(name: str, color: str = None, view_mode: str =
 @tool
 async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
     """
-    Lista tarefas pendentes. 
+    Lista tarefas PENDENTES para ter uma visão geral.
     date_filter: 'YYYY-MM-DD'.
-    Retorna uma lista de tarefas com metadados essenciais para edição (ID, Título, Projeto).
+    Use esta ferramenta para LISTAR e IDENTIFICAR tarefas (pegar IDs).
+    Para ler o conteúdo completo/notas, use 'get_ticktick_item_details'.
     """
     print(f"DEBUG [get_ticktick_tasks]: Filtro={date_filter}, Projeto={project_id}")
     try:
@@ -194,7 +195,7 @@ async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
         display_tasks = tasks[:40]
         # Retornamos uma estrutura que a IA possa parsear facilmente
         result = "\n".join([
-            f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}, Proj: {t['projectId']}]" 
+            f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}, Proj: {t['projectId']}, Kind: {t.get('kind', 'TASK')}]" 
             for t in display_tasks
         ])
         
@@ -204,6 +205,60 @@ async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
         return result
     except Exception as e:
         return f"❌ Erro ao buscar tarefas: {str(e)}"
+
+@tool
+async def get_ticktick_item_details(item_id: str):
+    """
+    Obtém o conteúdo COMPLETO e detalhes de uma tarefa ou nota específica.
+    Use para ler o que está escrito dentro de uma nota antes de replicar no Obsidian.
+    """
+    try:
+        details = await ticktick.get_task_by_id(item_id)
+        return json.dumps(details, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return f"❌ Erro ao buscar detalhes: {str(e)}"
+
+@tool
+async def delete_ticktick_item(project_id: str, item_id: str):
+    """Remove definitivamente uma tarefa ou nota do TickTick."""
+    try:
+        success = await ticktick.delete_task(project_id, item_id)
+        return "✅ Item removido com sucesso." if success else "❌ Falha ao remover item."
+    except Exception as e:
+        return f"❌ Erro ao deletar: {str(e)}"
+
+@tool
+async def list_ticktick_structure(include_groups: bool = True):
+    """
+    Lista a estrutura de pastas (Grupos) e Listas (Projetos) do TickTick.
+    Use para se localizar e saber em qual lista criar ou buscar algo.
+    """
+    try:
+        projects = await ticktick.list_projects()
+        structure = "ESTRUTURA TICKTICK:\n"
+        
+        if include_groups:
+            groups = await ticktick.list_project_groups()
+            group_map = {g['id']: g['name'] for g in groups}
+            # Organiza por grupo
+            by_group = {}
+            for p in projects:
+                gid = p.get('groupId', 'no_group')
+                if gid not in by_group: by_group[gid] = []
+                by_group[gid].append(p)
+            
+            for gid, projs in by_group.items():
+                gname = group_map.get(gid, "Sem Pasta")
+                structure += f"\n📂 {gname}:\n"
+                for p in projs:
+                    structure += f"  - 📝 {p['name']} [ID: {p['id']}, Kind: {p.get('kind')}]\n"
+        else:
+            for p in projects:
+                structure += f"- 📝 {p['name']} [ID: {p['id']}, Kind: {p.get('kind')}]\n"
+                
+        return structure
+    except Exception as e:
+        return f"❌ Erro ao listar estrutura: {str(e)}"
 
 @tool
 async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
@@ -283,6 +338,9 @@ tools = [
     create_ticktick_task, 
     create_ticktick_project, 
     get_ticktick_tasks,
+    get_ticktick_item_details,
+    delete_ticktick_item,
+    list_ticktick_structure,
     get_ticktick_metrics_via_mcp, 
     batch_create_ticktick_tasks,
     batch_update_ticktick_tasks,

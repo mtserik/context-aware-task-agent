@@ -214,11 +214,79 @@ class TickTickService:
             print(f"✅ Lote finalizado: {len(results)} processadas.")
         return results
 
+    async def delete_task(self, project_id: str, task_id: str) -> bool:
+        """Remove uma tarefa ou nota do TickTick."""
+        if not self.access_token:
+            raise Exception("Access Token não configurado.")
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        async with httpx.AsyncClient() as client:
+            url = f"{self.base_url}/project/{project_id}/task/{task_id}"
+            response = await client.delete(url, headers=headers)
+            return response.status_code == 200
+
+    async def get_task_by_id(self, task_id: str) -> Dict[str, Any]:
+        """Obtém os detalhes completos de uma tarefa ou nota via MCP."""
+        try:
+            # O MCP 'fetch' retorna o objeto completo
+            result = await self.call_mcp_tool("fetch", {"id": task_id})
+            
+            # Normalização: MCP chama 'text' o que o REST chama de 'content'
+            if isinstance(result, dict):
+                if "text" in result and "content" not in result:
+                    result["content"] = result["text"]
+                return result
+            raise Exception("MCP fetch didn't return a dictionary")
+        except Exception as e:
+            print(f"⚠️ Erro ao buscar detalhes via MCP ({e}). Tentando REST...")
+            # Fallback REST
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.base_url}/task/{task_id}", headers=headers)
+                if response.status_code == 200:
+                    return response.json()
+                raise Exception(f"Tarefa {task_id} não encontrada.")
+
+    async def list_projects(self) -> List[Dict[str, Any]]:
+        """Lista todos os projetos (listas) do usuário. Tenta MCP, cai para REST."""
+        try:
+            result = await self.call_mcp_tool("list_projects", {})
+            # Se o MCP retornar um erro formatado como dict
+            if isinstance(result, dict) and result.get("isError"):
+                raise Exception(f"MCP list_projects error: {result.get('content')}")
+            
+            projects = result.get('projects', result) if isinstance(result, dict) else result
+            if isinstance(projects, list):
+                return projects
+            raise Exception("MCP list_projects didn't return a list")
+        except Exception as e:
+            print(f"⚠️ Erro ao listar projetos via MCP ({e}). Usando REST fallback...")
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.base_url}/project", headers=headers)
+                return response.json() if response.status_code == 200 else []
+
+    async def list_project_groups(self) -> List[Dict[str, Any]]:
+        """Lista as pastas (grupos de projetos) do usuário. Tenta MCP, cai para REST se falhar."""
+        try:
+            result = await self.call_mcp_tool("list_project_groups", {})
+            if isinstance(result, dict) and result.get("isError"):
+                 raise Exception(f"MCP list_project_groups error: {result.get('content')}")
+            
+            groups = result.get('project_groups', result) if isinstance(result, dict) else result
+            if isinstance(groups, list):
+                return groups
+            return []
+        except Exception as e:
+            print(f"⚠️ Erro ao listar grupos via MCP ({e}).")
+            return []
+
     # --- Métodos MCP (Analítico & Métricas via JSON-RPC over HTTP) ---
 
     async def _call_mcp_tool(self, method: str, params: Dict[str, Any]) -> Any:
         """
         Helper privado para realizar chamadas JSON-RPC ao servidor MCP do TickTick.
+        Extrai e parseia o conteúdo de texto se for um JSON string.
         """
         if not self.mcp_token:
             raise Exception("Chave MCP não configurada (TICKTICK_MCP_TOKEN).")
@@ -243,7 +311,23 @@ class TickTickService:
                     result = response.json()
                     if "error" in result:
                         raise Exception(f"Erro JSON-RPC: {result['error']}")
-                    return result.get("result")
+                    
+                    mcp_output = result.get("result", {})
+                    
+                    # Se o MCP retornar uma lista de conteúdos (padrão MCP)
+                    if isinstance(mcp_output, dict) and "content" in mcp_output:
+                        contents = mcp_output["content"]
+                        for item in contents:
+                            if item.get("type") == "text":
+                                text_val = item.get("text", "")
+                                # Tenta parsear se for JSON (muitos servidores MCP retornam JSON em texto)
+                                try:
+                                    if text_val.strip().startswith(("{", "[")):
+                                        return json.loads(text_val)
+                                    return text_val
+                                except:
+                                    return text_val
+                    return mcp_output
                 else:
                     raise Exception(f"Erro HTTP {response.status_code}: {response.text}")
             except Exception as e:
