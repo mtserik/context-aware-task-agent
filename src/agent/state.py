@@ -1,4 +1,4 @@
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, Dict, Any
 from langgraph.graph.message import add_messages
 
 # Domain Model do LangGraph

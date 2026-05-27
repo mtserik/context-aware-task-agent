@@ -8,6 +8,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from src.agent.state import AgentState
 from src.services.vector_db import VectorDBService
 from src.services.ticktick import TickTickService
