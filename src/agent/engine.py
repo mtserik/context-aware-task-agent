@@ -366,24 +366,55 @@ class MaeveAgent:
     async def _call_model_node(self, state: AgentState):
         from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
         
-        # 1. Limpeza e Trimming de Mensagens (Garante que a história não cresça infinitamente)
-        # Mantemos as últimas 20 mensagens para contexto, mas preservamos a lógica de ferramentas
+        # 1. Trimming e Limpeza de Mensagens
         raw_messages = state['messages']
-        if len(raw_messages) > 30:
-            # Estratégia de corte: mantém as últimas 20, mas garante que não cortamos no meio de um tool call
-            # Se a mensagem mais antiga que sobrar for um ToolMessage, precisamos do AssistantMessage anterior
-            trimmed_messages = raw_messages[-20:]
-            if isinstance(trimmed_messages[0], ToolMessage):
-                # Tenta achar o início do bloco de ferramentas
-                idx = len(raw_messages) - 20
-                while idx > 0 and (isinstance(raw_messages[idx], ToolMessage) or (isinstance(raw_messages[idx], AIMessage) and raw_messages[idx].tool_calls)):
-                    idx -= 1
-                trimmed_messages = raw_messages[idx:]
-        else:
-            trimmed_messages = raw_messages
+        
+        # Garantimos que a história enviada ao modelo esteja SEMPRE íntegra
+        # OpenAI exige: AIMessage(tool_calls) -> ToolMessage(s)
+        
+        def get_valid_sequence(msgs, limit=20):
+            if len(msgs) <= limit:
+                return msgs
+            
+            # Pega o corte inicial
+            subset = msgs[-limit:]
+            
+            # Regra 1: Se a primeira mensagem do subset for ToolMessage, precisamos voltar até achar o AIMessage dela
+            while subset and isinstance(subset[0], ToolMessage):
+                limit += 1
+                subset = msgs[-limit:]
+            
+            # Regra 2: Se a última mensagem for AIMessage com tool_calls, o modelo vai quebrar (espera ToolMessage)
+            # Mas como estamos no node 'call_model', se a última mensagem tiver tool_calls, 
+            # o LangGraph deveria ter passado pelo node 'tools'. Se caiu aqui, algo falhou.
+            # Vamos remover tool_calls órfãos no final por segurança.
+            if subset and isinstance(subset[-1], AIMessage) and subset[-1].tool_calls:
+                subset = subset[:-1]
+                
+            return subset
 
-        # 2. Extração de Contexto
-        user_msg = next((m for m in reversed(trimmed_messages) if isinstance(m, HumanMessage)), None)
+        trimmed_messages = get_valid_sequence(raw_messages, limit=20)
+
+        # 2. Validação de Sequência (Remoção de Órfãos no meio da história)
+        # Se houver um AIMessage com tool_calls e a próxima NÃO for um ToolMessage, o OpenAI rejeita.
+        final_messages = []
+        i = 0
+        while i < len(trimmed_messages):
+            msg = trimmed_messages[i]
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                # Verifica se a próxima é ToolMessage
+                if i + 1 < len(trimmed_messages) and isinstance(trimmed_messages[i+1], ToolMessage):
+                    final_messages.append(msg)
+                else:
+                    # Órfão: ignora as tool_calls para não quebrar o histórico
+                    msg_clean = AIMessage(content=msg.content or "Processando ferramentas...")
+                    final_messages.append(msg_clean)
+            else:
+                final_messages.append(msg)
+            i += 1
+
+        # 3. Extração de Contexto
+        user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
         user_id = user_msg.additional_kwargs.get("user_id", "unknown") if user_msg else "unknown"
         chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
 
@@ -391,11 +422,10 @@ class MaeveAgent:
         context_docs = await vector_db.search_context(last_query) if last_query else []
         context_str = "\n".join([f"- {doc['metadata'].get('title')}: {doc['content'][:200]}" for doc in context_docs])
         
-        # --- Cálculo de Contexto Temporal ---
+        # Contexto Temporal
         now_dt = datetime.now()
         date_str = now_dt.strftime('%d/%m/%Y')
         time_str = now_dt.strftime('%H:%M')
-        
         dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
         day_of_week = dias[now_dt.weekday()]
         
@@ -415,20 +445,19 @@ class MaeveAgent:
             obsidian_context=context_str
         )
         
-        # 3. Execução do Modelo
-        # Filtramos mensagens de sistema antigas para não duplicar no prompt
-        filtered_messages = [m for m in trimmed_messages if not isinstance(m, SystemMessage)]
+        # 4. Invocação
+        history = [m for m in final_messages if not isinstance(m, SystemMessage)]
         
         try:
-            response = await self.llm.ainvoke([SystemMessage(content=system_content)] + filtered_messages)
+            response = await self.llm.ainvoke([SystemMessage(content=system_content)] + history)
             return {"messages": [response]}
         except Exception as e:
-            print(f"❌ Erro crítico no modelo: {e}")
-            # Se falhar por contexto, tenta uma versão mínima
-            if "context" in str(e).lower() or "400" in str(e):
-                print("⚠️ Tentando fallback com histórico mínimo...")
-                response = await self.llm.ainvoke([SystemMessage(content=system_content)] + filtered_messages[-5:])
-                return {"messages": [response]}
+            print(f"❌ Erro OpenAI: {e}")
+            if "400" in str(e):
+                # Fallback extremo: Apenas o último pedido do usuário e o sistema
+                last_human = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)
+                fallback_history = [last_human] if last_human else []
+                return {"messages": [await self.llm.ainvoke([SystemMessage(content=system_content)] + fallback_history)]}
             raise e
 
     async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):
