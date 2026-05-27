@@ -40,48 +40,26 @@ class MaeveCLI:
         
     def _display_header(self):
         self.console.clear()
-        grid = Table.grid(expand=True)
-        grid.add_column(justify="center", ratio=1)
-        grid.add_row(
-            Panel(
-                "[bold magenta]M A E V E[/bold magenta]\n[dim]Context-Aware Knowledge & Task Orchestrator[/dim]",
-                border_style="magenta",
-                subtitle=f"[yellow]Cloud: {API_URL}[/yellow] | [cyan]Thread: {self.thread_id[:8]}[/cyan]"
-            )
-        )
-        self.console.print(grid)
-
-    async def _send_message(self, message: str) -> Optional[str]:
-        headers = {"X-API-Key": API_KEY} if API_KEY else {}
-        try:
-            response = await self.session.post(
-                f"{API_URL.rstrip('/')}/chat",
-                json={"message": message, "thread_id": self.thread_id},
-                headers=headers
-            )
-            if response.status_code == 200:
-                return response.json().get("response")
-            else:
-                self.console.print(f"[bold red]Erro na API ({response.status_code}):[/bold red] {response.text}")
-                return None
-        except Exception as e:
-            self.console.print(f"[bold red]Erro de Conexão:[/bold red] {str(e)}")
-            return None
+        self.console.print(f"[bold magenta]MAEVE CLI[/bold magenta] [dim]v0.3.0[/dim]")
+        self.console.print(f"[dim]Endpoint: {API_URL}[/dim]")
+        self.console.print(f"[dim]Session:  {self.thread_id[:8]}[/dim]")
+        self.console.print("")
+        self.console.print("[dim]Commands: /clear, /exit, /quit[/dim]")
+        self.console.print("-" * 40)
+        self.console.print("")
 
     async def run(self):
         self._display_header()
         
-        # Estilo para o prompt_toolkit
         style = PromptStyle.from_dict({
             'prompt': 'bold cyan',
         })
 
-        self.console.print("[dim]Digite '/exit' ou '/quit' para sair. '/clear' para limpar a tela.[/dim]\n")
-
         while True:
             try:
+                # Prompt estilo Gemini CLI
                 user_input = await self.prompt_session.prompt_async(
-                    "❯ ", 
+                    "user> ", 
                     style=style
                 )
                 user_input = user_input.strip()
@@ -90,30 +68,26 @@ class MaeveCLI:
                     continue
 
                 if user_input.lower() in ["/exit", "/quit", "exit", "quit"]:
-                    self.console.print("[bold yellow]Encerrando sessão. Até logo![/bold yellow]")
+                    self.console.print("\n[dim]Stopping session...[/dim]")
                     break
 
                 if user_input.lower() == "/clear":
                     self._display_header()
                     continue
 
-                with Status("[bold magenta]Maeve processando...", console=self.console, spinner="dots12"):
+                # Efeito de "Pensando" minimalista
+                with Status("", console=self.console, spinner="point"):
                     response = await self._send_message(user_input)
 
                 if response:
-                    # Renderiza o Markdown da resposta de forma elegante
-                    self.console.print(
-                        Panel(
-                            Markdown(response),
-                            title="[bold magenta]Maeve[/bold magenta]",
-                            title_align="left",
-                            border_style="magenta",
-                            padding=(1, 2)
-                        )
-                    )
-                    self.console.print("") # Linha em branco extra
+                    self.console.print("")
+                    # Resposta da Maeve sem painéis pesados, apenas indentação e cor
+                    self.console.print("[bold magenta]maeve>[/bold magenta]")
+                    self.console.print(Markdown(response))
+                    self.console.print("") # Espaço para o próximo prompt
 
             except KeyboardInterrupt:
+                self.console.print("\n[dim]Use /exit to quit.[/dim]")
                 continue
             except EOFError:
                 break
