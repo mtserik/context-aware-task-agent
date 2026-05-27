@@ -131,15 +131,25 @@ class TickTickService:
         if not self.access_token:
             raise Exception("Access Token não configurado.")
 
-        # FALLBACK: Se não houver project_id, tenta achar o 'Inbox'
+        # FALLBACK: Se não houver project_id, tenta achar o 'Inbox' de forma inteligente
         if not project_id:
             try:
                 projects = await self.list_projects()
-                # Procura por Inbox ou o primeiro projeto disponível
-                inbox = next((p for p in projects if p.get('name') == 'Inbox'), projects[0] if projects else None)
+                # Busca por 'Inbox' ou 'Entrada' (comum em PT-BR) de forma insensível a maiúsculas
+                inbox = None
+                for p in projects:
+                    name_lower = p.get('name', '').lower()
+                    if name_lower in ['inbox', 'entrada'] or 'inbox' in name_lower:
+                        inbox = p
+                        break
+                
+                # Se ainda não achou, pega o primeiro projeto da lista
+                if not inbox and projects:
+                    inbox = projects[0]
+                
                 if inbox:
                     project_id = inbox.get('id')
-                    print(f"ℹ️ [TickTick] Nenhum projeto enviado. Usando fallback: {inbox.get('name')} ({project_id})")
+                    print(f"ℹ️ [TickTick] Fallback inteligente: Usando lista '{inbox.get('name')}' (ID: {project_id})")
             except Exception as e:
                 print(f"⚠️ Erro ao buscar Inbox fallback: {e}")
 
