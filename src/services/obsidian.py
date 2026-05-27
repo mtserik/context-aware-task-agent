@@ -48,11 +48,14 @@ class ObsidianService:
                 if not key_content.endswith("\n"):
                     key_content += "\n"
                 
+                if "-----BEGIN" not in key_content:
+                    print("AVISO: SSH_PRIVATE_KEY não contém '-----BEGIN'. Verifique a formatação.")
+
                 with open(self.ssh_key_dest, "w") as f:
                     f.write(key_content)
                 
                 subprocess.run(["chmod", "600", self.ssh_key_dest], check=True)
-                print("SSH configurado via variável SSH_PRIVATE_KEY.")
+                print(f"SSH configurado via variável SSH_PRIVATE_KEY em {self.ssh_key_dest}.")
             
             elif os.path.exists(self.ssh_key_source):
                 # 2. Modo Local: Chave via mapeamento de volume
@@ -78,30 +81,56 @@ class ObsidianService:
                 cwd=self.vault_path if os.path.exists(os.path.join(self.vault_path, ".git")) else None,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                env=os.environ
             )
             return result.stdout
         except subprocess.CalledProcessError as e:
-            print(f"Erro ao executar git {' '.join(args)}: {e.stderr}")
+            error_msg = e.stderr if e.stderr else str(e)
+            print(f"Erro ao executar git {' '.join(args)}: {error_msg}")
             raise e
 
     async def sync(self):
         """
         Garante que o repositório está clonado e atualizado.
+        Implementa suporte robusto a Railway Volumes (git init em vez de git clone).
         """
-        if not os.path.exists(os.path.join(self.vault_path, ".git")):
-            print(f"Clonando repositório Obsidian em {self.vault_path}...")
-            # Garante que o diretório pai existe
-            os.makedirs(os.path.dirname(self.vault_path), exist_ok=True)
-            # Clona o repo.
-            subprocess.run(
-                ["git", "clone", self.repo_url, self.vault_path],
-                env=os.environ,
-                check=True
-            )
+        git_dir = os.path.join(self.vault_path, ".git")
+        
+        if not os.path.exists(git_dir):
+            print(f"Inicializando repositório Obsidian em {self.vault_path}...")
+            # Garante que o diretório existe
+            os.makedirs(self.vault_path, exist_ok=True)
+            
+            try:
+                # 1. git init (funciona mesmo que a pasta exista e não esteja vazia)
+                subprocess.run(["git", "init"], cwd=self.vault_path, check=True)
+                
+                # 2. Configurar remote
+                # Remove o remote se já existir (raro, mas evita erros)
+                try:
+                    subprocess.run(["git", "remote", "remove", "origin"], cwd=self.vault_path, capture_output=True)
+                except:
+                    pass
+                subprocess.run(["git", "remote", "add", "origin", self.repo_url], cwd=self.vault_path, check=True)
+                
+                # 3. Configurar usuário Git localmente
+                self._setup_git_user()
+                
+                # 4. Fetch e Reset (usando env para SSH_COMMAND)
+                print(f"Baixando arquivos de {self.repo_url}...")
+                subprocess.run(["git", "fetch", "origin"], cwd=self.vault_path, env=os.environ, check=True)
+                subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=self.vault_path, check=True)
+                
+                print("Vault inicializado com sucesso via git init.")
+            except subprocess.CalledProcessError as e:
+                error_output = e.stderr.decode() if hasattr(e, 'stderr') and e.stderr else str(e)
+                print(f"Erro crítico ao sincronizar vault: {error_output}")
+                raise Exception(f"Falha na inicialização do Git: {error_output}")
         else:
             print("Atualizando Vault (git pull)...")
             try:
+                # O pull --rebase é mais limpo para automações
                 self._run_git(["pull", "--rebase", "origin", "main"])
             except Exception as e:
                 print(f"Erro no pull --rebase: {e}. Tentando abortar rebase.")
