@@ -49,13 +49,16 @@ class ObsidianService:
                     key_content += "\n"
                 
                 if "-----BEGIN" not in key_content:
-                    print("AVISO: SSH_PRIVATE_KEY não contém '-----BEGIN'. Verifique a formatação.")
+                    print(f"ERRO: SSH_PRIVATE_KEY não contém '-----BEGIN'. Tamanho: {len(key_content)} caracteres.")
+                else:
+                    first_line = key_content.split("\n")[0]
+                    print(f"SSH key detectada: {first_line}... [Tamanho total: {len(key_content)}]")
 
                 with open(self.ssh_key_dest, "w") as f:
                     f.write(key_content)
                 
                 subprocess.run(["chmod", "600", self.ssh_key_dest], check=True)
-                print(f"SSH configurado via variável SSH_PRIVATE_KEY em {self.ssh_key_dest}.")
+                print(f"SSH configurado em {self.ssh_key_dest}.")
             
             elif os.path.exists(self.ssh_key_source):
                 # 2. Modo Local: Chave via mapeamento de volume
@@ -68,12 +71,12 @@ class ObsidianService:
                 return
 
             # Configura o comando Git para usar a chave correta
-            # Nota: Muitos ambientes cloud (como Railway) bloqueiam a porta 22 (SSH padrão).
-            # Se for GitHub, usamos a porta 443 (HTTPS) como fallback para SSH.
+            # Adicionado -v para debug se necessário, mas mantido limpo por padrão
             ssh_options = [
                 f"-i {self.ssh_key_dest}",
                 "-o StrictHostKeyChecking=no",
-                "-o UserKnownHostsFile=/dev/null"
+                "-o UserKnownHostsFile=/dev/null",
+                "-o IdentitiesOnly=yes" # Garante que use APENAS a chave fornecida
             ]
             
             if "github.com" in (self.repo_url or ""):
