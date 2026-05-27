@@ -68,7 +68,20 @@ class ObsidianService:
                 return
 
             # Configura o comando Git para usar a chave correta
-            os.environ["GIT_SSH_COMMAND"] = f"ssh -i {self.ssh_key_dest} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+            # Nota: Muitos ambientes cloud (como Railway) bloqueiam a porta 22 (SSH padrão).
+            # Se for GitHub, usamos a porta 443 (HTTPS) como fallback para SSH.
+            ssh_options = [
+                f"-i {self.ssh_key_dest}",
+                "-o StrictHostKeyChecking=no",
+                "-o UserKnownHostsFile=/dev/null"
+            ]
+            
+            if "github.com" in (self.repo_url or ""):
+                print("Configurando SSH para usar porta 443 (GitHub Fallback)...")
+                ssh_options.append("-o HostName=ssh.github.com")
+                ssh_options.append("-p 443")
+            
+            os.environ["GIT_SSH_COMMAND"] = f"ssh {' '.join(ssh_options)}"
 
         except Exception as e:
             print(f"Erro ao configurar SSH: {e}")
