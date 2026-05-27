@@ -168,7 +168,7 @@ class TelegramService:
                 if force_voice or "responda em áudio" in text.lower() or "fale" in text.lower():
                     await self._respond_with_voice(final_response, update)
                 else:
-                    await update.message.reply_text(final_response, parse_mode="Markdown")
+                    await update.message.reply_text(final_response)
             else:
                 await update.message.reply_text("Não consegui gerar uma resposta.")
 
