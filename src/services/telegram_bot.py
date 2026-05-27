@@ -144,6 +144,11 @@ class TelegramService:
                         icon = "🌐" if tool_name == "web_search" else "🧠"
                         status_msg = await update.message.reply_text(f"{icon} _Pesquisando na web..._", parse_mode="Markdown")
                 
+                # Ignora eventos internos do Roteador para não vazar JSON no chat
+                tags = event.get("tags", [])
+                if "router_llm" in tags:
+                    continue
+
                 # Captura conteúdo parcial ou final do modelo
                 elif kind == "on_chat_model_stream":
                     content = event.get("data", {}).get("chunk", {}).content

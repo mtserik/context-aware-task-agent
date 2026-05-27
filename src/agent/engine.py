@@ -422,7 +422,7 @@ class MaeveAgent:
         
         try:
             # Usamos o gpt-4o-mini sempre para rotear (é rápido e barato)
-            raw_decision = await ChatOpenAI(model="gpt-4o-mini", temperature=0).ainvoke(routing_prompt)
+            raw_decision = await ChatOpenAI(model="gpt-4o-mini", temperature=0).ainvoke(routing_prompt, config={"tags": ["router_llm"]})
             # Limpeza básica do JSON caso o modelo retorne Markdown
             clean_json = raw_decision.content.replace("```json", "").replace("```", "").strip()
             decision = json.loads(clean_json)
