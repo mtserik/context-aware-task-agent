@@ -191,16 +191,19 @@ async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
         
         if not tasks: return f"Nenhuma tarefa pendente para a data {date_filter}."
         
+        total_count = len(tasks)
         # Limita a 40 tarefas para não estourar contexto da IA
         display_tasks = tasks[:40]
-        # Retornamos uma estrutura que a IA possa parsear facilmente
-        result = "\n".join([
+        
+        # Retornamos o TOTAL explicitamente no topo para evitar alucinações de contagem
+        result = f"TOTAL ENCONTRADO: {total_count} itens pendentes.\n\n"
+        result += "\n".join([
             f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}, Proj: {t['projectId']}, Kind: {t.get('kind', 'TASK')}]" 
             for t in display_tasks
         ])
         
-        if len(tasks) > 40:
-            result += f"\n\n... e mais {len(tasks) - 40} tarefas não listadas por brevidade."
+        if total_count > 40:
+            result += f"\n\n... (Exibindo 40 de {total_count} itens por brevidade)."
             
         return result
     except Exception as e:
