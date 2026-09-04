@@ -16,6 +16,7 @@ async def create_ticktick_task(
     """
     Cria uma tarefa ou subtarefa no TickTick.
     
+    DATAS: 'due_date' pode ser enviado no formato ISO UTC ('YYYY-MM-DDTHH:MM:SSZ') ou local de São Paulo ('YYYY-MM-DDTHH:MM:SS' / 'YYYY-MM-DD'). O sistema normaliza automaticamente para UTC para o backend do TickTick.
     PRIORIDADES: 0: Nenhuma, 1: Baixa, 3: MÉDIA, 5: ALTA.
     
     SEQUÊNCIA OBRIGATÓRIA PARA SUBTAREFAS:
@@ -64,10 +65,11 @@ async def batch_create_ticktick_tasks(tasks: List[Dict[str, Any]]):
 @tool
 async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
     """
-    Lista tarefas PENDENTES para ter uma visão geral.
-    date_filter: 'YYYY-MM-DD'.
-    Use esta ferramenta para LISTAR e IDENTIFICAR tarefas (pegar IDs).
-    Para ler o conteúdo completo/notas, use 'get_ticktick_item_details'.
+    Lista tarefas PENDENTES do Erik com lookback de 7 dias para atrasadas.
+    date_filter: data no formato 'YYYY-MM-DD' (ex: '2026-09-04') ou 'today' / 'hoje'.
+    A camada de domínio converte automaticamente os carimbos UTC do TickTick para o fuso de São Paulo (UTC-3),
+    garantindo que tarefas agendadas para a noite ou o dia civil correto sejam exibidas com precisão.
+    As datas de vencimento retornadas já estarão formatadas para São Paulo - Brasil (DD/MM/YYYY HH:mm).
     """
     result = await _task_domain.get_tasks(date_filter=date_filter, project_id=project_id)
     return result.to_agent_message()

@@ -41,16 +41,12 @@ def register_prompts(mcp: FastMCP) -> None:
             temporal = resolve_temporal_context()
             prompt_text = get_system_prompt(
                 tier=tier or "smart",
-                date=temporal["date"],
-                time=temporal["time"],
-                day_of_week=temporal["day_of_week"],
-                period=temporal["period"],
-                timezone=temporal["timezone"],
                 user_id="antigravity_mcp_user",
                 chat_id="antigravity_mcp_channel",
                 obsidian_context=(
                     "[Use a ferramenta memory_search para buscar contexto especifico do Vault do Obsidian.]"
                 ),
+                **temporal,
             )
             return [
                 PromptMessage(

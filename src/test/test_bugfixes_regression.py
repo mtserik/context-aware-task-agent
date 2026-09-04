@@ -22,13 +22,17 @@ def test_obsidian_path_traversal_blocked():
     print("[OK] test_obsidian_path_traversal_blocked PASSOU")
 
 def test_ticktick_date_normalization():
-    """Test B3: Date strings must be converted to valid ISO format for TickTick."""
-    assert _normalize_ticktick_date("2026-09-03") == "2026-09-03T00:00:00-0300"
-    assert _normalize_ticktick_date("2026-09-03T15:30:00") == "2026-09-03T15:30:00-0300"
-    assert _normalize_ticktick_date("2026-09-03T15:30:00Z") == "2026-09-03T15:30:00Z"
-    assert _normalize_ticktick_date("2026-09-03T15:30:00-0300") == "2026-09-03T15:30:00-0300"
+    """Test B3: Date strings must be converted to valid ISO UTC format for TickTick MCP / Backend."""
+    from src.domain.temporal import utc_to_sp_datetime, format_sp_task_date
+    assert _normalize_ticktick_date("2026-09-03") == "2026-09-03T03:00:00.000+0000"
+    assert _normalize_ticktick_date("2026-09-03T15:30:00") == "2026-09-03T18:30:00.000+0000"
+    assert _normalize_ticktick_date("2026-09-03T15:30:00Z") == "2026-09-03T15:30:00.000+0000"
+    assert _normalize_ticktick_date("2026-09-03T15:30:00-0300") == "2026-09-03T18:30:00.000+0000"
     assert _normalize_ticktick_date(None) is None
     assert _normalize_ticktick_date("") == ""
+    # Conversão de volta para São Paulo
+    assert format_sp_task_date("2026-09-05T00:30:00.000+0000") == "04/09/2026 21:30"
+    assert format_sp_task_date("2026-09-03T03:00:00.000+0000") == "03/09/2026"
     print("[OK] test_ticktick_date_normalization PASSOU")
 
 def test_get_valid_sequence_termination():

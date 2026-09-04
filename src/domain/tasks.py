@@ -4,26 +4,18 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from src.domain.models import TaskResult
+from src.domain.temporal import sp_to_utc_iso, utc_to_sp_datetime, format_sp_task_date, get_local_now
 from src.services.registry import get_ticktick_service
 from src.services.ticktick import TickTickService
 
 def normalize_ticktick_date(date_str: Optional[str]) -> Optional[str]:
     """
-    Normaliza strings de data para o padrão ISO exigido pela API do TickTick (-0300 BRT).
-    Garante compliance estrito para datas pontuais e Time-Blocking (startDate / dueDate).
+    Normaliza strings de data para o padrão ISO UTC exigido pela API do TickTick e TickTick MCP (+0000).
+    Converte datas relativas de São Paulo para o instante correspondente em UTC no backend.
     """
     if not date_str:
         return date_str
-    d = str(date_str).strip()
-    if len(d) == 10 and d.count("-") == 2:
-        return f"{d}T00:00:00-0300"
-    if "T" in d:
-        time_part = d.split("T")[1]
-        if "Z" not in time_part and "+" not in time_part and "-" not in time_part:
-            return f"{d}-0300"
-    elif "Z" not in d and "+" not in d and "-" not in d[10:]:
-        return f"{d}-0300"
-    return d
+    return sp_to_utc_iso(date_str)
 
 class TaskDomainService:
     """
@@ -168,39 +160,47 @@ class TaskDomainService:
         project_id: Optional[str] = None
     ) -> TaskResult:
         """
-        Lista tarefas pendentes com suporte a 7 dias de lookback para itens atrasados.
+        Lista tarefas pendentes com conversão de carimbos UTC para o fuso de São Paulo (UTC-3)
+        e suporte a 7 dias de lookback para itens atrasados.
         """
         try:
             tasks = await self.ticktick.get_tasks(project_id=project_id)
             if not tasks:
                 return TaskResult(success=True, message="Nenhuma tarefa pendente encontrada.", data=[])
 
-            # Filtro inteligente de data com 7 dias de lookback
+            # Filtro inteligente de data: resolve data alvo em São Paulo e converte carimbos UTC
             if date_filter:
-                try:
-                    target_dt = datetime.strptime(date_filter[:10], "%Y-%m-%d").date()
-                    start_lookback = target_dt - timedelta(days=7)
-                    filtered = []
-                    for t in tasks:
-                        due_raw = t.get('dueDate')
-                        if not due_raw:
-                            continue
-                        due_date_str = str(due_raw)[:10]
-                        try:
-                            task_dt = datetime.strptime(due_date_str, "%Y-%m-%d").date()
-                            if start_lookback <= task_dt <= target_dt:
-                                filtered.append(t)
-                        except ValueError:
-                            if date_filter in str(due_raw):
-                                filtered.append(t)
-                    tasks = filtered
-                except Exception:
-                    tasks = [t for t in tasks if t.get('dueDate') and date_filter in str(t['dueDate'])]
+                filter_clean = str(date_filter).strip().lower()
+                today_sp = get_local_now().date()
+                if filter_clean in ["today", "hoje"]:
+                    target_dt = today_sp
+                else:
+                    try:
+                        target_dt = datetime.strptime(filter_clean[:10], "%Y-%m-%d").date()
+                    except ValueError:
+                        target_dt = today_sp
+
+                start_lookback = target_dt - timedelta(days=7)
+                filtered = []
+                for t in tasks:
+                    due_raw = t.get('dueDate')
+                    if not due_raw:
+                        continue
+                    dt_sp = utc_to_sp_datetime(due_raw)
+                    if dt_sp:
+                        if start_lookback <= dt_sp.date() <= target_dt:
+                            t['dueDate_sp'] = format_sp_task_date(due_raw)
+                            filtered.append(t)
+                    else:
+                        if str(target_dt) in str(due_raw):
+                            filtered.append(t)
+                tasks = filtered
 
             if not tasks:
+                date_label = date_filter or "informada"
                 return TaskResult(
                     success=True,
-                    message=f"Nenhuma tarefa pendente para a data {date_filter}.",
+                    message=f"Nenhuma tarefa pendente encontrada para a data {date_label}.",
                     data=[]
                 )
 
@@ -209,7 +209,7 @@ class TaskDomainService:
 
             msg = f"TOTAL ENCONTRADO: {total_count} itens pendentes.\n\n"
             msg += "\n".join([
-                f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}, Proj: {t.get('projectId', 'inbox')}, Kind: {t.get('kind', 'TASK')}]"
+                f"- {t['title']} (Vence: {format_sp_task_date(t.get('dueDate'))}) [ID: {t['id']}, Proj: {t.get('projectId', 'inbox')}, Kind: {t.get('kind', 'TASK')}]"
                 for t in display_tasks
             ])
             if total_count > 40:

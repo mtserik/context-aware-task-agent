@@ -511,12 +511,8 @@ class MaeveAgent:
 
         temporal = _resolve_temporal_context()
         static_prompt, dynamic_prompt = get_planner_prompt_parts(
-            date=temporal["date"],
-            time=temporal["time"],
-            day_of_week=temporal["day_of_week"],
-            period=temporal["period"],
-            timezone=temporal.get("timezone", "America/Sao_Paulo"),
             obsidian_context=context_str or "[Nenhuma nota prévia diretamente relacionada]",
+            **temporal,
         )
 
         is_anthropic = (
@@ -639,14 +635,10 @@ class MaeveAgent:
         active_tier = "fast" if base_model == self.fast_model_base else "smart"
         static_prompt, dynamic_prompt = get_system_prompt_parts(
             tier=active_tier,
-            date=temporal["date"],
-            time=temporal["time"],
-            day_of_week=temporal["day_of_week"],
-            period=temporal["period"],
-            timezone=temporal.get("timezone", "America/Sao_Paulo"),
             user_id=user_id,
             chat_id=chat_id,
             obsidian_context=context_str,
+            **temporal,
         )
 
         if plan_directive:

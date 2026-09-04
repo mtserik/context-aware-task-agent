@@ -60,10 +60,10 @@ def test_task_domain_time_blocking_normalization():
     ]
     result = asyncio.run(svc.batch_update_tasks(tasks))
     assert result.success is True
-    # Verifica argumento passado ao ticktick.batch_update_tasks
+    # Verifica argumento passado ao ticktick.batch_update_tasks em UTC (+3h de SP)
     called_payload = mock_ticktick.batch_update_tasks.call_args[0][0]
-    assert called_payload[0]["dueDate"] == "2026-09-04T16:00:00-0300"
-    assert called_payload[0]["startDate"] == "2026-09-04T14:00:00-0300"
+    assert called_payload[0]["dueDate"] == "2026-09-04T19:00:00.000+0000"
+    assert called_payload[0]["startDate"] == "2026-09-04T17:00:00.000+0000"
     print("[OK] test_task_domain_time_blocking_normalization PASSOU")
 
 def test_knowledge_domain_note_creation():

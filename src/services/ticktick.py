@@ -469,16 +469,22 @@ class TickTickService:
                 # Se o MCP retornar uma lista de conteúdos (padrão MCP)
                 if isinstance(mcp_output, dict) and "content" in mcp_output:
                     contents = mcp_output["content"]
+                    parsed_items = []
                     for item in contents:
                         if item.get("type") == "text":
                             text_val = item.get("text", "")
-                            # Tenta parsear se for JSON (muitos servidores MCP retornam JSON em texto)
                             try:
                                 if text_val.strip().startswith(("{", "[")):
-                                    return json.loads(text_val)
-                                return text_val
-                            except:
-                                return text_val
+                                    parsed_items.append(json.loads(text_val))
+                                else:
+                                    parsed_items.append(text_val)
+                            except Exception:
+                                parsed_items.append(text_val)
+                    if len(parsed_items) == 1:
+                        return parsed_items[0]
+                    elif len(parsed_items) > 1:
+                        return parsed_items
+                    return parsed_items
                 return mcp_output
             else:
                 raise Exception(f"Erro HTTP {response.status_code}: {response.text}")

@@ -1,4 +1,4 @@
-﻿"""
+"""
 MCP Resources -- read-only data providers exposed via the maeve:// URI scheme.
 
 Zero-Token Principle: todos os recursos sao leitura deterministica de dados
@@ -30,16 +30,12 @@ def register_resources(mcp: FastMCP) -> None:
             temporal = resolve_temporal_context()
             return get_system_prompt(
                 tier="smart",
-                date=temporal["date"],
-                time=temporal["time"],
-                day_of_week=temporal["day_of_week"],
-                period=temporal["period"],
-                timezone=temporal["timezone"],
                 user_id="antigravity_mcp_user",
                 chat_id="antigravity_mcp_channel",
                 obsidian_context=(
                     "[Use a ferramenta memory_search para buscar contexto especifico do Vault.]"
                 ),
+                **temporal,
             )
         except Exception as e:
             logger.error("Erro ao gerar system-prompt resource: %s", e)

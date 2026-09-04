@@ -783,4 +783,37 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
 - Suíte completa de testes de regressão (`test_bugfixes_regression.py`): 13/13 aprovados.
 - Topologia do grafo (`test_graph_topology.py`): 5 nós confirmados (`router`, `planner`, `call_model`, `tools`).
 - Fluxo ponta a ponta (`test_full_graph_flow.py`): mock validado com transferência de plano do Sonnet para injeção no Luna.
-- Teste real de planejamento (`test_planner_executor.py`): roteamento e geração de plano estruturado aprovados.
+- Teste real de planejamento (`test_planner_executor.py`): roteamento e geração de plano estruturado aprovados.
+
+---
+
+### 9.7 Sprint 17: Normalização Temporal Dupla — Backend em UTC (TickTick MCP) & Respostas Humanizadas em São Paulo (2026-09-04)
+
+> **Objetivo:** Resolver divergências de fuso horário no TickTick MCP que causavam perda de tarefas noturnas devido ao fuso UTC, mantendo backend e MCP operando em UTC estrito enquanto toda comunicação com o usuário e exibição textual opera no horário de Brasília (`America/Sao_Paulo`).
+
+#### 1. Diagnóstico do Problema Temporal & Parser MCP
+- **TickTick UTC Persistence:** O TickTick MCP e REST API persistem e retornam datas em UTC. Uma tarefa com vencimento às 21:30 em São Paulo (`UTC-3`) em 04/09/2026 é persistida como `2026-09-05T00:30:00.000+0000` (já no dia 5 em UTC).
+- **Filtro de Data Ingênuo:** O método `get_tasks` anteriormente aplicava um filtro baseado em `dueDate[:10]`. Ao filtrar por `"2026-09-04"`, as tarefas agendadas para a noite (a partir das 21:00) eram truncadas e descartadas porque seu prefixo de data UTC era `"2026-09-05"`.
+- **Parser Truncado no MCP Client (`ticktick.py`):** O método `_call_mcp_tool` continha `return json.loads(content[0]["text"])`, retornando apenas o primeiro item da lista de saída e descartando todas as tarefas subsequentes retornadas pelo MCP JSON-RPC.
+- **Conflito de Prompts:** O prompt de sistema instruía o modelo a nunca usar UTC e anexar forçadamente `-0300`, o que entrava em conflito com o padrão UTC esperado pelo servidor MCP do TickTick.
+
+#### 2. Implementação da Solução de Dualidade Temporal
+- **Serviço Temporal de Precisão (`src/domain/temporal.py`):**
+  - `sp_to_utc_iso(date_str)`: Converte qualquer data/hora informada em São Paulo para o formato ISO 8601 UTC estrito (`YYYY-MM-DDTHH:MM:SS.000+0000`). Tarefas all-day (`YYYY-MM-DD`) são mapeadas para `03:00:00.000+0000` (meia-noite em SP).
+  - `utc_to_sp_datetime(date_str)`: Converte timestamps UTC vindos do TickTick/MCP de volta para objetos `datetime` com timezone de São Paulo (`America/Sao_Paulo`).
+  - `format_sp_task_date(date_str)`: Formata carimbos de data para o usuário como `DD/MM/YYYY HH:mm` (ou `DD/MM/YYYY` para all-day).
+  - `resolve_temporal_context()`: Fornece metadados duplos explícitos (`iso_sp`, `date_sp`, `time_sp`, `iso_utc`, `date_utc`, `time_utc`).
+- **Camada de Domínio de Tarefas (`src/domain/tasks.py`):**
+  - `TaskDomainService.get_tasks`: Converte cada tarefa para o horário de Brasília antes da comparação de datas e do cálculo de atraso (lookback de 7 dias). Formata as datas nas mensagens retornadas com `format_sp_task_date` e popula `dueDate_sp` nos metadados.
+  - `normalize_ticktick_date`: Normaliza todas as entradas para UTC estrito com milissegundos antes de enviar ao TickTick MCP ou REST API.
+- **Correção no Parser Multi-Conteúdo (`src/services/ticktick.py`):**
+  - `_call_mcp_tool`: Itera e agrega todos os itens contidos em `content`, desserializando listas completas de tarefas sem perda de dados.
+- **Alinhamento dos Prompts de Sistema (`src/agent/prompts.py`):**
+  - `FAST_PROMPT_DYNAMIC`, `SMART_PROMPT_DYNAMIC` e `PLANNER_PROMPT_DYNAMIC` atualizados com a **Diretriz de Dualidade Temporal**:
+    - **Backend & Tools (TickTick MCP):** Datas em UTC ISO 8601 (`YYYY-MM-DDTHH:MM:SS.000+0000`).
+    - **Humano (Erik / Telegram):** Datas sempre apresentadas no formato local de São Paulo (`DD/MM/YYYY HH:mm`).
+
+#### 3. Verificação & Qualidade
+- Suíte completa de testes de domínio (`test_domain_services.py`): 12/12 aprovados.
+- Suíte completa de testes de regressão (`test_bugfixes_regression.py`): 13/13 aprovados.
+- Teste real com TickTick MCP: busca por tarefas de hoje recuperou com sucesso itens noturnos (ex: `Estudo Profundo - Descoberta (Vence: 04/09/2026 21:30)`).

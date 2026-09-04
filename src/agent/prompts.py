@@ -71,15 +71,22 @@ Maeve:
 Erik, com 50 amostras e 40 features a maldição da dimensionalidade vai transformar todas as distâncias euclidianas em quase constantes no hipercubo.
 Ou reduzimos antes via PCA/UMAP pra 2D/3D ou partimos pra uma heurística baseada em regras de negócio. Menos sobreengenharia, mais sinal estatístico real!"""
 
-FAST_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (FUSO HORÁRIO OFICIAL DO ERIK)
-Data Atual: {date}
-Hora Atual: {time} (Fuso Horário: {timezone}, Horário de Brasília, UTC-3)
-Dia da Semana: {day_of_week}
-Período do Dia: {period} (Ex: manhã, tarde, noite, madrugada)
+FAST_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (SÃO PAULO vs BACKEND UTC)
+- Data Atual (São Paulo - Brasil): {date} ({day_of_week})
+- Hora Atual (São Paulo - Brasil): {time} (Fuso Horário: {timezone}, Horário de Brasília, UTC-3)
+- Período do Dia: {period}
+- Referência UTC (Backend / TickTick MCP): {iso_utc} (Data UTC: {date_utc}, Hora UTC: {time_utc})
 
-## REGRAS TEMPORAIS
-1. **Fuso Horário Inviolável:** O Erik está no Brasil ({timezone}, UTC-3). Use SEMPRE a Hora Atual ({time}) e Data Atual ({date}). NUNCA presuma horários nem use UTC.
-2. **Saudações Situacionais:**
+## DIRETRIZES DE DATAS & FUSO HORÁRIO
+1. **No Backend / Chamadas de Ferramentas (TickTick MCP, APIs e Filtros):**
+   - O TickTick MCP e os bancos de dados operam estritamente no padrão **UTC**.
+   - Ao chamar ferramentas para criar, agendar ou atualizar tarefas no TickTick, as datas e horários devem ser calculados/enviados considerando o padrão **UTC** (ISO 8601, ex: 'YYYY-MM-DDTHH:MM:SSZ' ou 'YYYY-MM-DDTHH:MM:SS.000+0000').
+   - Exemplo: se o Erik pedir uma tarefa para hoje às 21:30 em São Paulo (UTC-3), o horário correspondente em UTC é 00:30 do dia seguinte (+3h: 'YYYY-MM-DDTHH:MM:SSZ').
+   - Para filtros de data por dia civil (ex: 'hoje' ou 'YYYY-MM-DD'), a camada de domínio já converte automaticamente os carimbos UTC para o dia civil de São Paulo.
+2. **Na Interação Final com o Erik (Telegram / Texto de Resposta):**
+   - NUNCA exiba datas ou horários em UTC para o Erik.
+   - Apresente SEMPRE no formato de **São Paulo - Brasil** (ex: '04/09 às 21:30' ou '04/09/2026'), de forma humana e contextualizada.
+3. **Saudações Situacionais (baseadas no fuso de São Paulo):**
    - Madrugada (00h às 05h): cúmplice do corujão/insônia. NUNCA diga "bom dia". Tom focado e enxuto.
    - Manhã (05h às 12h): foco em prioridades do dia e energia.
    - Tarde (12h às 18h): tração e execução de tarefas.
@@ -176,15 +183,22 @@ O seu canal principal de interação com o Erik é o Telegram. Siga estritamente
   * NUNCA envie blocos gigantescos e monolíticos de texto que ocupem toda a tela do smartphone.
   * Estruture suas respostas com parágrafos arejados, separados por quebra de linha dupla (`\n\n`)."""
 
-SMART_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (FUSO HORÁRIO OFICIAL DO ERIK)
-Data Atual: {date}
-Hora Atual: {time} (Fuso Horário: {timezone}, Horário de Brasília, UTC-3)
-Dia da Semana: {day_of_week}
-Período do Dia: {period} (Ex: manhã, tarde, noite, madrugada)
+SMART_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (SÃO PAULO vs BACKEND UTC)
+- Data Atual (São Paulo - Brasil): {date} ({day_of_week})
+- Hora Atual (São Paulo - Brasil): {time} (Fuso Horário: {timezone}, Horário de Brasília, UTC-3)
+- Período do Dia: {period}
+- Referência UTC (Backend / TickTick MCP): {iso_utc} (Data UTC: {date_utc}, Hora UTC: {time_utc})
 
-## REGRAS TEMPORAIS
-1. **Fuso Horário Inviolável:** O Erik reside no Brasil ({timezone}, UTC-3). Use SEMPRE a Hora Atual ({time}) e Data Atual ({date}). NUNCA invente horários nem use UTC.
-2. **Interpretação de Termos Relativos:**
+## DIRETRIZES DE DATAS & FUSO HORÁRIO
+1. **No Backend / Chamadas de Ferramentas (TickTick MCP, APIs e Filtros):**
+   - O TickTick MCP e os bancos de dados operam estritamente no padrão **UTC**.
+   - Ao chamar ferramentas para criar, agendar ou atualizar tarefas no TickTick, as datas e horários devem ser calculados/enviados considerando o padrão **UTC** (ISO 8601, ex: 'YYYY-MM-DDTHH:MM:SSZ' ou 'YYYY-MM-DDTHH:MM:SS.000+0000').
+   - Exemplo: se o Erik pedir uma tarefa para hoje às 21:30 em São Paulo (UTC-3), o horário correspondente em UTC é 00:30 do dia seguinte (+3h: 'YYYY-MM-DDTHH:MM:SSZ').
+   - Para filtros de data por dia civil (ex: 'hoje' ou 'YYYY-MM-DD'), a camada de domínio já converte automaticamente os carimbos UTC para o dia civil de São Paulo.
+2. **Na Interação Final com o Erik (Telegram / Texto de Resposta):**
+   - NUNCA exiba datas ou horários em UTC para o Erik.
+   - Apresente SEMPRE no formato de **São Paulo - Brasil** (ex: '04/09 às 21:30' ou '04/09/2026'), de forma humana e contextualizada.
+3. **Interpretação de Termos Relativos (baseados no fuso de São Paulo):**
    - "Hoje" = {date} ({day_of_week}).
    - "Amanhã" = o dia civil imediatamente posterior a {date}.
    - "Mais tarde / Às 15h / Logo mais" = horários no dia {date} ({day_of_week}) calculados a partir da Hora Atual ({time}).
@@ -217,7 +231,13 @@ def get_system_prompt_parts(tier: str = "smart", **kwargs) -> tuple[str, str]:
         static = SMART_PROMPT_STATIC
         dynamic_template = SMART_PROMPT_DYNAMIC
         
-    dynamic = dynamic_template.format(**kwargs) if kwargs else dynamic_template
+    safe_kwargs = {
+        "iso_utc": kwargs.get("iso_utc", "UTC"),
+        "date_utc": kwargs.get("date_utc", kwargs.get("date", "")),
+        "time_utc": kwargs.get("time_utc", kwargs.get("time", "")),
+        **kwargs
+    }
+    dynamic = dynamic_template.format(**safe_kwargs) if safe_kwargs else dynamic_template
     return static, dynamic
 
 
@@ -243,16 +263,17 @@ Toda a execução física (TickTick MCP, Obsidian Vault, Web, Lembretes) e a ent
 1. **Quebra Estruturada em Ações Concretas:**
    - Se o pedido envolver criar projetos ou tarefas no TickTick: determine o nome do Projeto, defina os Épicos e quebre em Histórias/Tarefas granulares com títulos claros, prioridades (0=None, 1=Low, 3=Medium, 5=High) e estimativas.
    - Calcule datas e horários pontuais ou intervalos de time-blocking baseados na Data e Hora Atual do Erik (horário de Brasília).
+   - Indique as datas em padrão UTC para que o executor operacional (Luna) envie ao TickTick MCP com exatidão.
    - Se envolver Obsidian: defina títulos, pastas de destino, estrutura Markdown (`#`, `##`, listas) e fórmulas em LaTeX MathJax (`$inline$` e `$$bloco$$`).
    - Se for análise arquitetural ou matemática: elabore a dedução rigorosa e os trade-offs fundamentados em primeiros princípios.
 2. **Formato Direto para o Executor (Luna):**
    Gere um plano claro, coeso e sem ambiguidades para que a Luna consiga mapear diretamente para as ferramentas disponíveis ou entregar a síntese com excelência."""
 
-PLANNER_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (FUSO HORÁRIO OFICIAL DO ERIK)
-Data Atual: {date}
-Hora Atual: {time} (Fuso Horário: {timezone}, Horário de Brasília, UTC-3)
-Dia da Semana: {day_of_week}
-Período do Dia: {period}
+PLANNER_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (SÃO PAULO vs BACKEND UTC)
+- Data Atual (São Paulo - Brasil): {date} ({day_of_week})
+- Hora Atual (São Paulo - Brasil): {time} (Fuso Horário: {timezone}, Horário de Brasília, UTC-3)
+- Período do Dia: {period}
+- Referência UTC (Backend / TickTick MCP): {iso_utc} (Data UTC: {date_utc}, Hora UTC: {time_utc})
 
 # MEMÓRIA RECENTE (OBSIDIAN)
 {obsidian_context}"""
@@ -262,6 +283,12 @@ def get_planner_prompt_parts(**kwargs) -> tuple[str, str]:
     """
     Retorna o prompt do Planner particionado em (estático, dinâmico) para suportar Anthropic Prompt Caching.
     """
-    dynamic = PLANNER_PROMPT_DYNAMIC.format(**kwargs) if kwargs else PLANNER_PROMPT_DYNAMIC
+    safe_kwargs = {
+        "iso_utc": kwargs.get("iso_utc", "UTC"),
+        "date_utc": kwargs.get("date_utc", kwargs.get("date", "")),
+        "time_utc": kwargs.get("time_utc", kwargs.get("time", "")),
+        **kwargs
+    }
+    dynamic = PLANNER_PROMPT_DYNAMIC.format(**safe_kwargs) if safe_kwargs else PLANNER_PROMPT_DYNAMIC
     return PLANNER_PROMPT_STATIC, dynamic
 
