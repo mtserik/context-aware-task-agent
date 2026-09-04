@@ -28,8 +28,10 @@ class DatabaseService:
                 # Só tenta resolver se não for um IP puro
                 if url.hostname and not url.hostname.replace('.', '').isdigit():
                     ipv4 = socket.gethostbyname(url.hostname)
-                    conn_info = conn_info.replace(f"@{url.hostname}", f"@{ipv4}", 1)
-                    print(f"📡 DNS: {url.hostname} -> {ipv4}")
+                    # Mantém o hostname original para não quebrar SNI / SSL na Supabase
+                    # e injeta hostaddr={ipv4} para conectar direto sem travar DNS
+                    conn_info += ("&" if "?" in conn_info else "?") + f"hostaddr={ipv4}"
+                    print(f"📡 DNS: {url.hostname} -> hostaddr={ipv4}")
             except Exception as e:
                 print(f"⚠️ DNS Bypass: {e}")
 
@@ -63,7 +65,12 @@ class DatabaseService:
             return self._checkpointer
         except Exception as e:
             print(f"❌ Erro ao obter checkpointer: {e}")
-            self.pool = None # Força reinicialização do pool na próxima tentativa
+            if self.pool is not None:
+                try:
+                    await self.pool.close()
+                except Exception:
+                    pass
+            self.pool = None # Força reinicialização limpa do pool na próxima tentativa
             self._checkpointer = None
             raise e
 
@@ -103,7 +110,13 @@ class DatabaseService:
 
     async def close(self):
         if self.pool:
-            await self.pool.close()
+            try:
+                await self.pool.close()
+            except Exception as e:
+                print(f"⚠️ Erro ao fechar Database pool: {e}")
+            finally:
+                self.pool = None
+                self._checkpointer = None
 
     # --- Métodos de Lembretes ---
     async def create_reminder(self, user_id: str, chat_id: str, content: str, reminder_at: str, metadata: dict = None):

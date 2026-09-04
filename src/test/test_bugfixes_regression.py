@@ -175,6 +175,25 @@ def test_selective_rag_skipping():
     assert should_search("Qual foi a arquitetura decidida para o MCP?", 2) is True
     print("[OK] test_selective_rag_skipping PASSOU")
 
+def test_extract_text_from_message_handling():
+    """Test S10/B11: Multi-provider message extraction handling Anthropic list blocks and LangChain outputs."""
+    from src.agent.engine import extract_text_from_message
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatResult, ChatGeneration
+
+    # Text extraction from Anthropic content blocks list
+    blocks = [{"type": "text", "text": "Deploy "}, {"type": "text", "text": "concluído."}]
+    assert extract_text_from_message(blocks) == "Deploy concluído."
+
+    # Text extraction from AIMessage with list blocks
+    msg = AIMessage(content=[{"type": "text", "text": "Resposta da Maeve"}])
+    assert extract_text_from_message(msg) == "Resposta da Maeve"
+
+    # Text extraction from ChatResult
+    cr = ChatResult(generations=[ChatGeneration(message=AIMessage(content="Resultado do ChatResult"))])
+    assert extract_text_from_message(cr) == "Resultado do ChatResult"
+    print("[OK] test_extract_text_from_message_handling PASSOU")
+
 if __name__ == "__main__":
     test_obsidian_path_traversal_blocked()
     test_ticktick_date_normalization()
@@ -185,4 +204,5 @@ if __name__ == "__main__":
     test_ticktick_connection_pooling()
     test_service_registry_singletons()
     test_selective_rag_skipping()
+    test_extract_text_from_message_handling()
     print("\n>>> TODOS OS TESTES DE REGRESSAO PASSARAM COM SUCESSO! <<<")

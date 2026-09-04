@@ -148,6 +148,7 @@ class TelegramService:
         
         try:
             from src.services.registry import get_maeve_agent
+            from src.agent.engine import extract_text_from_message
             maeve = self.maeve or get_maeve_agent()
             if not maeve:
                 await update.message.reply_text("O motor da Maeve está aquecendo. Tente novamente em alguns segundos.")
@@ -162,6 +163,11 @@ class TelegramService:
             # 1. Consome os eventos do agente
             async for event in maeve.run_stream(msg, thread_id=thread_id):
                 kind = event.get("event")
+                tags = event.get("tags", [])
+
+                # Ignora eventos internos do Roteador para não vazar JSON no chat
+                if "router_llm" in tags:
+                    continue
                 
                 # Detecta se uma ferramenta de pesquisa foi chamada
                 if kind == "on_tool_start":
@@ -169,32 +175,40 @@ class TelegramService:
                     if tool_name in ["web_search", "deep_research"] and not status_msg:
                         icon = "🌐" if tool_name == "web_search" else "🧠"
                         status_msg = await update.message.reply_text(f"{icon} _Pesquisando na web..._", parse_mode="Markdown")
-                
-                # Ignora eventos internos do Roteador para não vazar JSON no chat
-                tags = event.get("tags", [])
-                if "router_llm" in tags:
-                    continue
 
-                # Captura conteúdo parcial ou final do modelo
+                # Captura conteúdo parcial do modelo via stream
                 elif kind == "on_chat_model_stream":
-                    content = event.get("data", {}).get("chunk", {}).content
-                    if content:
-                        final_response += content
+                    chunk = event.get("data", {}).get("chunk")
+                    delta = extract_text_from_message(chunk)
+                    if delta:
+                        final_response += delta
                 
+                # Fallback caso o stream não tenha preenchido (ex: modelos sem streaming por chunk)
                 elif kind == "on_chat_model_end":
-                    # Fallback caso o stream não tenha preenchido (alguns modelos/configurações)
                     if not final_response:
                         output = event.get("data", {}).get("output")
-                        if output and hasattr(output, "content"):
-                            final_response = output.content
+                        extracted = extract_text_from_message(output)
+                        if extracted:
+                            final_response = extracted
+
+                # Fallback no encerramento da cadeia (call_model ou LangGraph)
+                elif kind == "on_chain_end":
+                    node_name = event.get("name", "")
+                    if node_name in ["call_model", "LangGraph"] and not final_response:
+                        output = event.get("data", {}).get("output")
+                        extracted = extract_text_from_message(output)
+                        if extracted:
+                            final_response = extracted
 
             # 2. Limpeza do status
             if status_msg:
                 try:
                     await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
-                except: pass
+                except Exception:
+                    pass
 
             # 3. Resposta final
+            final_response = final_response.strip()
             if final_response:
                 if force_voice or "responda em áudio" in text.lower() or "fale" in text.lower():
                     await self._respond_with_voice(final_response, update)

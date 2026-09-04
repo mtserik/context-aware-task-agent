@@ -198,6 +198,50 @@ def test_asymmetric_persona_prompt_system():
     print("[OK] test_asymmetric_persona_prompt_system PASSOU")
 
 
+def test_extract_text_from_message_resilience():
+    """Valida se extract_text_from_message lida com strings, blocos do Anthropic, ChatResult e dicts."""
+    from src.agent.engine import extract_text_from_message
+    from langchain_core.messages import AIMessage, HumanMessage, AIMessageChunk
+    from langchain_core.outputs import ChatResult, ChatGeneration
+
+    # 1. String pura
+    assert extract_text_from_message("Olá mundo") == "Olá mundo"
+    assert extract_text_from_message("") == ""
+    assert extract_text_from_message(None) == ""
+
+    # 2. Lista de strings
+    assert extract_text_from_message(["Parte 1", " Parte 2"]) == "Parte 1 Parte 2"
+
+    # 3. Lista de blocos Anthropic Claude ({'type': 'text', 'text': '...'})
+    anthropic_blocks = [
+        {"type": "text", "text": "Aqui está a resposta: "},
+        {"type": "text", "text": "Arquitetura limpa implementada com sucesso."}
+    ]
+    assert extract_text_from_message(anthropic_blocks) == "Aqui está a resposta: Arquitetura limpa implementada com sucesso."
+
+    # 4. AIMessage com string
+    msg_str = AIMessage(content="Resposta direta")
+    assert extract_text_from_message(msg_str) == "Resposta direta"
+
+    # 5. AIMessage com blocos Anthropic
+    msg_anthropic = AIMessage(content=[{"type": "text", "text": "Texto em bloco Anthropic"}])
+    assert extract_text_from_message(msg_anthropic) == "Texto em bloco Anthropic"
+
+    # 6. AIMessageChunk
+    chunk = AIMessageChunk(content="Pedacinho de stream")
+    assert extract_text_from_message(chunk) == "Pedacinho de stream"
+
+    # 7. ChatResult (astream_events v1 output)
+    chat_result = ChatResult(generations=[ChatGeneration(message=AIMessage(content="Resultado do ChatResult"))])
+    assert extract_text_from_message(chat_result) == "Resultado do ChatResult"
+
+    # 8. Dict com 'content' ou 'messages'
+    assert extract_text_from_message({"content": "Conteúdo em dict"}) == "Conteúdo em dict"
+    assert extract_text_from_message({"messages": [HumanMessage(content="User"), AIMessage(content="Final")]}) == "Final"
+
+    print("[OK] test_extract_text_from_message_resilience PASSOU")
+
+
 if __name__ == "__main__":
     test_dynamic_tool_binding_subsets()
     test_task_domain_parent_project_inheritance()
@@ -207,4 +251,5 @@ if __name__ == "__main__":
     test_multi_provider_model_factory()
     test_temporal_context_and_timezone_handling()
     test_asymmetric_persona_prompt_system()
+    test_extract_text_from_message_resilience()
     print("\n>>> TODOS OS TESTES UNITARIOS DE DOMINIO PASSARAM! <<<")

@@ -106,6 +106,47 @@ def _sanitize_message_history(raw_messages: List[BaseMessage], limit: int = 20) 
 
     return final_messages
 
+def extract_text_from_message(data: Any) -> str:
+    """
+    Extrai texto puro de forma determinística e resiliente a partir de qualquer estrutura:
+    - str
+    - list (blocos de texto [{'type': 'text', 'text': ...}], comum no Claude/Anthropic)
+    - AIMessage / AIMessageChunk / HumanMessage / BaseMessage
+    - ChatResult (.generations[0].message.content)
+    - dict (ex: {'messages': [...]}, {'content': ...})
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    if isinstance(data, list):
+        parts = []
+        for item in data:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                elif "content" in item:
+                    parts.append(extract_text_from_message(item["content"]))
+            elif hasattr(item, "text"):
+                parts.append(str(item.text))
+            elif hasattr(item, "content"):
+                parts.append(extract_text_from_message(item.content))
+        return "".join(parts)
+    if hasattr(data, "generations") and data.generations:
+        first_gen = data.generations[0]
+        if hasattr(first_gen, "message"):
+            return extract_text_from_message(first_gen.message.content)
+    if hasattr(data, "content"):
+        return extract_text_from_message(data.content)
+    if isinstance(data, dict):
+        if "content" in data:
+            return extract_text_from_message(data["content"])
+        if "messages" in data and data["messages"]:
+            return extract_text_from_message(data["messages"][-1])
+    return str(data)
+
 # Resolução temporal ciente de fuso horário (America/Sao_Paulo)
 _resolve_temporal_context = resolve_temporal_context
 
@@ -134,6 +175,7 @@ def create_chat_model(
                 temperature=None,
                 max_tokens=max_tokens,
                 api_key=anthropic_api_key,
+                streaming=True,
             )
         else:
             fallback_model = os.getenv("MAEVE_SMART_FALLBACK_MODEL", "gpt-4o")
@@ -143,7 +185,7 @@ def create_chat_model(
                 model_name_clean,
                 fallback_model,
             )
-            return ChatOpenAI(model=fallback_model, temperature=temperature or 0, max_tokens=max_tokens)
+            return ChatOpenAI(model=fallback_model, temperature=temperature or 0, max_tokens=max_tokens, streaming=True)
 
     # 2. Provedor OpenAI (GPT-5.6 Luna/Terra/Sol, o1, o3, GPT-4o, etc.)
     logger.info("Inicializando ChatOpenAI com o modelo: %s", model_name_clean)
@@ -151,6 +193,7 @@ def create_chat_model(
         "model": model_name_clean,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "streaming": True,
     }
 
     # Modelos com raciocínio (GPT-5.x, Luna, Terra, Sol, o1, o3):
@@ -382,7 +425,7 @@ class MaeveAgent:
         config = {"configurable": {"thread_id": thread_id}}
         input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
 
-        async for event in self._graph.astream_events({"messages": [input_msg]}, config=config, version="v1"):
+        async for event in self._graph.astream_events({"messages": [input_msg]}, config=config, version="v2"):
             yield event
 
     async def run(self, user_input: Any, thread_id: str = "default-thread") -> str:
@@ -390,7 +433,8 @@ class MaeveAgent:
         config = {"configurable": {"thread_id": thread_id}}
         input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
         result = await self._graph.ainvoke({"messages": [input_msg]}, config=config)
-        for m in reversed(result["messages"]):
-            if hasattr(m, "content") and m.content:
-                return m.content
+        for m in reversed(result.get("messages", [])):
+            txt = extract_text_from_message(m)
+            if txt:
+                return txt
         return "Processado."
