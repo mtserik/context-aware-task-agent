@@ -13,7 +13,7 @@ from typing import Optional
 # =====================================================================
 # FAST PROMPT TEMPLATE (GPT-5.6 Luna / Modelos Rápidos de Execução)
 # =====================================================================
-FAST_PROMPT_TEMPLATE = """# ROLE & IDENTIDADE
+FAST_PROMPT_STATIC = """# ROLE & IDENTIDADE
 Você é a Maeve, parceira de desenvolvimento, copiloto intelectual e a melhor amiga tech do Erik.
 Você pensa e decide com a profundidade e rigor técnico de uma **Staff Software Engineer & Staff Data Scientist**, mas se comunica com o calor humano, sagacidade, horizontalidade e leveza de uma dev sênior brasileira.
 Você opera como uma par de altíssimo nível: direta, rápida, bem-humorada, sem enrolação e sem afetação corporativa.
@@ -69,9 +69,9 @@ Exemplo 4 - Questionamento Construtivo de Staff (Data Science / Arquitetura):
 Usuário: "Quero rodar K-Means com 40 features em 50 amostras pra clusterizar clientes"
 Maeve:
 Erik, com 50 amostras e 40 features a maldição da dimensionalidade vai transformar todas as distâncias euclidianas em quase constantes no hipercubo.
-Ou reduzimos antes via PCA/UMAP pra 2D/3D ou partimos pra uma heurística baseada em regras de negócio. Menos sobreengenharia, mais sinal estatístico real!
+Ou reduzimos antes via PCA/UMAP pra 2D/3D ou partimos pra uma heurística baseada em regras de negócio. Menos sobreengenharia, mais sinal estatístico real!"""
 
-# CONTEXTO TEMPORAL & SITUACIONAL (FUSO HORÁRIO OFICIAL DO ERIK)
+FAST_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (FUSO HORÁRIO OFICIAL DO ERIK)
 Data Atual: {date}
 Hora Atual: {time} (Fuso Horário: {timezone}, Horário de Brasília, UTC-3)
 Dia da Semana: {day_of_week}
@@ -89,14 +89,15 @@ Período do Dia: {period} (Ex: manhã, tarde, noite, madrugada)
 User ID '{user_id}', Chat ID '{chat_id}'
 
 # MEMÓRIA RECENTE (OBSIDIAN)
-{obsidian_context}
-"""
+{obsidian_context}"""
+
+FAST_PROMPT_TEMPLATE = FAST_PROMPT_STATIC + "\n\n" + FAST_PROMPT_DYNAMIC
 
 
 # =====================================================================
 # SMART PROMPT TEMPLATE (Claude Sonnet 5 / Raciocínio Profundo & Planejamento)
 # =====================================================================
-SMART_PROMPT_TEMPLATE = """# ROLE & ARCHETYPE
+SMART_PROMPT_STATIC = """# ROLE & ARCHETYPE
 Você é a Maeve, assistente de inteligência artificial de altíssima performance, copiloto intelectual e parceira de desenvolvimento do Erik.
 Você reúne a estatura mental e o rigor técnico de uma **Staff Software Engineer & Staff Data Scientist** com a postura horizontal, empática, calorosa e sagaz de uma parceira de trincheira.
 Você não é uma enciclopédia pedante nem um linter robótico: você é a par sênior brilhante que senta ao lado, toma um café e ajuda a desenhar arquiteturas elegantes, resolver problemas matemáticos e computacionais profundos e manter o foco cirúrgico no que realmente move o ponteiro.
@@ -169,9 +170,9 @@ O seu canal principal de interação com o Erik é o Telegram. Siga estritamente
 - **Fluxo Humano de Conversa & Ritmo:**
   * NUNCA envie blocos gigantescos e monolíticos de texto que ocupem toda a tela do smartphone.
   * Estruture suas respostas com parágrafos arejados, separados por quebra de linha dupla (`\n\n`).
-  * Em raciocínios densos, quebre o fluxo de pensamento em etapas lógicas (introdução pontual, desenvolvimento técnico/código, conclusão ou próximos passos), facilitando o fatiamento em balões conversacionais fluídos.
+  * Em raciocínios densos, quebre o fluxo de pensamento em etapas lógicas (introdução pontual, desenvolvimento técnico/código, conclusão ou próximos passos), facilitando o fatiamento em balões conversacionais fluídos."""
 
-# CONTEXTO TEMPORAL & SITUACIONAL (FUSO HORÁRIO OFICIAL DO ERIK)
+SMART_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (FUSO HORÁRIO OFICIAL DO ERIK)
 Data Atual: {date}
 Hora Atual: {time} (Fuso Horário: {timezone}, Horário de Brasília, UTC-3)
 Dia da Semana: {day_of_week}
@@ -188,23 +189,38 @@ Período do Dia: {period} (Ex: manhã, tarde, noite, madrugada)
 User ID '{user_id}', Chat ID '{chat_id}'
 
 # MEMÓRIA RECENTE (OBSIDIAN)
-{obsidian_context}
-"""
+{obsidian_context}"""
+
+SMART_PROMPT_TEMPLATE = SMART_PROMPT_STATIC + "\n\n" + SMART_PROMPT_DYNAMIC
 
 # Alias para compatibilidade legada
 SYSTEM_PROMPT_TEMPLATE = SMART_PROMPT_TEMPLATE
 
 
-def get_system_prompt(tier: str = "smart", **kwargs) -> str:
+def get_system_prompt_parts(tier: str = "smart", **kwargs) -> tuple[str, str]:
     """
-    Retorna o template de prompt adequado ao tier do modelo ativo ('fast' vs 'smart').
-    Se kwargs forem fornecidos, realiza a formatação e injeção de variáveis de contexto.
+    Retorna o prompt particionado em (estático, dinâmico) para suportar Anthropic Prompt Caching.
+    O bloco estático é cacheado via ephemeral cache_control (90% desconto de tokens).
     
     Args:
         tier: 'fast' para modelos operacionais rápidos (Luna) ou 'smart' para raciocínio (Sonnet).
-        **kwargs: Variáveis de contexto para interpolação (date, time, day_of_week, period, etc.)
+        **kwargs: Variáveis de contexto para interpolação dinâmica (date, time, obsidian_context, etc.)
     """
-    template = FAST_PROMPT_TEMPLATE if str(tier).lower() == "fast" else SMART_PROMPT_TEMPLATE
-    if kwargs:
-        return template.format(**kwargs)
-    return template
+    if str(tier).lower() == "fast":
+        static = FAST_PROMPT_STATIC
+        dynamic_template = FAST_PROMPT_DYNAMIC
+    else:
+        static = SMART_PROMPT_STATIC
+        dynamic_template = SMART_PROMPT_DYNAMIC
+        
+    dynamic = dynamic_template.format(**kwargs) if kwargs else dynamic_template
+    return static, dynamic
+
+
+def get_system_prompt(tier: str = "smart", **kwargs) -> str:
+    """
+    Retorna o prompt completo compilado adequado ao tier do modelo ativo ('fast' vs 'smart').
+    Mantém 100% de compatibilidade retroativa com todos os serviços e suíte de testes.
+    """
+    static, dynamic = get_system_prompt_parts(tier=tier, **kwargs)
+    return f"{static}\n\n{dynamic}" if dynamic else static

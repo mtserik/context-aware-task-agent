@@ -24,8 +24,14 @@ class DatabaseService:
             if not self.connection_string:
                 raise Exception("SUPABASE_DB_URL não configurada")
             
-            # 1. Resolve Hostname para IPv4 manualmente para evitar erro de rede no Docker
+            # 1. Normaliza connection string (corrige prefixos duplicados ou antigos)
             conn_info = self.connection_string.strip()
+            while conn_info.startswith("postgresql:postgresql://"):
+                conn_info = "postgresql://" + conn_info[len("postgresql:postgresql://"):]
+            if conn_info.startswith("postgres://"):
+                conn_info = "postgresql://" + conn_info[len("postgres://"):]
+
+            # 2. Resolve Hostname para IPv4 manualmente para evitar erro de rede no Docker
             try:
                 url = urlparse.urlparse(conn_info)
                 # Só tenta resolver se não for um IP puro
@@ -38,19 +44,23 @@ class DatabaseService:
             except Exception as e:
                 logger.warning("DNS Bypass: %s", e)
 
-            # 2. Configurações de estabilidade
+            # 3. Configurações de estabilidade e SSL
             if "sslmode" not in conn_info:
                 conn_info += ("&" if "?" in conn_info else "?") + "sslmode=require"
 
+            # 4. Inicializa Pool.
+            # IMPORTANTE: prepare_threshold=None é OBRIGATÓRIO no Supabase (porta 6543 / PgBouncer)
+            # para desativar prepared statements nomeados e evitar DuplicatePreparedStatement.
             self.pool = AsyncConnectionPool(
                 conninfo=conn_info,
+                min_size=1,
                 max_size=10,
-                kwargs={"autocommit": True, "prepare_threshold": 0},
+                kwargs={"autocommit": True, "prepare_threshold": None},
                 open=False,
                 reconnect_timeout=10,
                 check=AsyncConnectionPool.check_connection
             )
-            await self.pool.open()
+            await self.pool.open(wait=True, timeout=10)
             logger.info("Conexão SQL ativa com Supabase.")
                 
         return self.pool

@@ -19,7 +19,7 @@ except ImportError:
     _ANTHROPIC_AVAILABLE = False
 
 from src.agent.state import AgentState, IntentDomain
-from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE, get_system_prompt
+from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE, get_system_prompt, get_system_prompt_parts
 from src.services.registry import get_vector_db_service
 from src.domain.tasks import normalize_ticktick_date
 from src.domain.temporal import resolve_temporal_context
@@ -67,7 +67,7 @@ tool_node = ToolNode(ALL_TOOLS)
 
 # --- Funções Utilitárias de Pipeline ---
 
-def _sanitize_message_history(raw_messages: List[BaseMessage], limit: int = 20) -> List[BaseMessage]:
+def _sanitize_message_history(raw_messages: List[BaseMessage], limit: int = 30) -> List[BaseMessage]:
     """
     Sanitiza o histórico de mensagens:
     1. Trunca na janela desejada sem cortar sequências no meio de chamadas de ferramentas.
@@ -105,6 +105,45 @@ def _sanitize_message_history(raw_messages: List[BaseMessage], limit: int = 20) 
         i += 1
 
     return final_messages
+
+
+def _apply_anthropic_history_cache(history: List[BaseMessage]) -> List[BaseMessage]:
+    """
+    Adiciona breakpoint de cache (cache_control ephemeral) na penúltima mensagem do histórico
+    (final do turno anterior) para que todo o histórico de conversas acumulado seja lido com 90% de desconto.
+    """
+    if len(history) < 2:
+        return history
+
+    new_history = list(history)
+    target_idx = len(new_history) - 2
+    target_msg = new_history[target_idx]
+
+    text = extract_text_from_message(target_msg)
+    if not text:
+        return history
+
+    cached_content = [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+    if isinstance(target_msg, AIMessage):
+        new_history[target_idx] = AIMessage(
+            content=cached_content,
+            tool_calls=getattr(target_msg, "tool_calls", []),
+            id=getattr(target_msg, "id", None),
+        )
+    elif isinstance(target_msg, HumanMessage):
+        new_history[target_idx] = HumanMessage(
+            content=cached_content,
+            additional_kwargs=getattr(target_msg, "additional_kwargs", {}),
+            id=getattr(target_msg, "id", None),
+        )
+    elif isinstance(target_msg, ToolMessage):
+        new_history[target_idx] = ToolMessage(
+            content=cached_content,
+            tool_call_id=getattr(target_msg, "tool_call_id", ""),
+            id=getattr(target_msg, "id", None),
+        )
+    return new_history
 
 def extract_text_from_message(data: Any) -> str:
     """
@@ -233,6 +272,13 @@ class MaeveAgent:
         self.smart_model = self.smart_model_base.bind_tools(ALL_TOOLS)
 
         self._vector_db = get_vector_db_service()
+
+        # Garante que SEMPRE exista um checkpointer ativo (evita que a máquina de estados fique sem memória)
+        if checkpointer is None:
+            from langgraph.checkpoint.memory import MemorySaver
+            checkpointer = MemorySaver()
+            logger.info("Nenhum checkpointer externo fornecido. Inicializando com MemorySaver volátil em memória.")
+
         self._graph = self._build_graph(checkpointer)
 
     def _build_graph(self, checkpointer):
@@ -255,10 +301,11 @@ class MaeveAgent:
 
     async def _router_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Classifica a intenção (domínio) e complexidade do pedido.
+        Classifica a intenção (domínio) e complexidade do pedido considerando o contexto conversacional recente.
         Preenche AgentState.current_intent e AgentState.routing_metadata.
         """
-        last_msg = next((m for m in reversed(state['messages']) if isinstance(m, HumanMessage)), None)
+        messages = state.get('messages', [])
+        last_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
         if not last_msg:
             return {
                 "current_intent": "chat",
@@ -267,9 +314,64 @@ class MaeveAgent:
 
         text_clean = str(last_msg.content).strip().lower()
 
-        # Heurística Fast-Path: O(1) para saudações e mensagens triviais
-        simple_patterns = r"^(oi|olá|ola|bom dia|boa tarde|boa noite|valeu|obrigado|ok|beleza|show|tchau|obg|sim|não|nao)[\.\!\?]*$"
-        if len(text_clean) <= 20 or re.match(simple_patterns, text_clean):
+        # Encontra a última mensagem da Maeve (assistente) antes da mensagem humana atual
+        last_ai_msg = None
+        for m in reversed(messages):
+            if isinstance(m, AIMessage):
+                last_ai_msg = m
+                break
+
+        ai_text = extract_text_from_message(last_ai_msg).lower() if last_ai_msg else ""
+
+        # 1. Heurística Contextual de Confirmação:
+        # Se a Maeve perguntou/propôs uma ação ("quer que eu salve no Obsidian?") e o usuário confirma ("sim", "pode criar", "faz isso")
+        confirmation_patterns = r"^(sim|pode|pode criar|pode salvar|pode fazer|faz isso|cria|salva|bora|manda bala|manda ver|com certeza|claro|por favor|confirmo|positivo|ok|ok pode|vai em frente)[\.\!\?]*$"
+        is_confirmation = bool(re.match(confirmation_patterns, text_clean)) or any(text_clean.startswith(p) for p in ["sim,", "pode ", "faz ", "cria ", "salva "])
+
+        if is_confirmation and last_ai_msg:
+            # Assistente acabou de propor criar nota ou documentar no Obsidian
+            if any(k in ai_text for k in ["obsidian", "vault", "segundo cérebro", "second brain", "nota", "salvar esse", "salvar isso", "documentar"]):
+                logger.info("[Router Contextual]: Confirmação para ação de Obsidian detectada -> KNOWLEDGE / SMART")
+                return {
+                    "current_intent": "knowledge",
+                    "routing_metadata": {
+                        "complexity": 2,
+                        "model": "smart",
+                        "domain": "knowledge",
+                        "reason": "Confirmação contextual do usuário para criar/atualizar nota no Obsidian"
+                    }
+                }
+            # Assistente acabou de propor criar/atualizar tarefa no TickTick
+            if any(k in ai_text for k in ["tarefa", "task", "ticktick", "agendar", "backlog", "time-blocking"]):
+                logger.info("[Router Contextual]: Confirmação para ação de Tarefa detectada -> TASKS / FAST")
+                return {
+                    "current_intent": "tasks",
+                    "routing_metadata": {
+                        "complexity": 1,
+                        "model": "fast",
+                        "domain": "tasks",
+                        "reason": "Confirmação contextual do usuário para tarefa no TickTick"
+                    }
+                }
+            # Assistente acabou de propor agendar lembrete
+            if any(k in ai_text for k in ["lembrete", "lembrar", "notificar"]):
+                logger.info("[Router Contextual]: Confirmação para ação de Lembrete detectada -> REMINDERS / FAST")
+                return {
+                    "current_intent": "reminders",
+                    "routing_metadata": {
+                        "complexity": 1,
+                        "model": "fast",
+                        "domain": "reminders",
+                        "reason": "Confirmação contextual do usuário para agendar lembrete"
+                    }
+                }
+
+        # 2. Heurística Fast-Path: O(1) para saudações e acks isolados
+        # NUNCA aplicar se houver pergunta pendente do assistente na conversa anterior
+        greeting_patterns = r"^(oi|olá|ola|bom dia|boa tarde|boa noite|valeu|obrigado|tchau|até mais|falou|ok|show|beleza|blz)(\s+(maeve|tudo bem|td bem))?[\.\!\?]*$"
+        has_pending_question = bool(last_ai_msg and "?" in ai_text)
+
+        if not has_pending_question and re.match(greeting_patterns, text_clean):
             print(f"[Router Fast-Path]: Mensagem simples ('{text_clean[:30]}') -> Usando FAST sem chamar LLM.")
             return {
                 "current_intent": "chat",
@@ -281,8 +383,14 @@ class MaeveAgent:
                 }
             }
 
+        # 3. LLM Router com Injeção de Contexto Recente (resolve ambiguidades e pronomes "isso", "aquilo")
+        recent_context = ""
+        if last_ai_msg:
+            ai_snippet = extract_text_from_message(last_ai_msg)[:350].strip()
+            recent_context = f"\nContexto Recente - Última Mensagem da Maeve (Assistente):\n\"{ai_snippet}\"\n"
+
         routing_prompt = f"""
-        Analise o pedido abaixo e responda APENAS em JSON no formato:
+        Analise o pedido abaixo considerando o contexto recente da conversa e responda APENAS em JSON no formato:
         {{
             "complexity": int (1 a 5),
             "model": "fast" | "smart",
@@ -292,17 +400,18 @@ class MaeveAgent:
 
         Diretrizes de Domínio:
         - tasks: TickTick, listas de afazeres, subtarefas, projetos, time-blocking, hábitos, conclusão.
-        - knowledge: Obsidian, notas, Vault, pastas de notas, resumos de conhecimento pessoal.
+        - knowledge: Obsidian, notas, Vault, pastas de notas, resumos de conhecimento pessoal, criar ou mover notas.
         - search: Pesquisa na web, notícias, fatos em tempo real, deep research.
         - reminders: Lembretes temporais no Telegram ("me lembra amanhã às 10h").
         - chat: Conversas reflexivas, saudações, bate-papo sem necessidade de ferramentas.
-        - general: Pedidos híbridos que misturam múltiplos domínios.
+        - general: Pedidos híbridos que misturam múltiplos domínios ou continuam ações anteriores.
 
         Complexidade:
         1-2 (fast): Comandos diretos, criação simples, saudações, listagens.
         3-5 (smart): Planejamento, múltiplos passos, raciocínio profundo, consolidação.
-
-        Pedido: {last_msg.content}
+{recent_context}
+        Pedido Atual do Usuário:
+        "{last_msg.content}"
         """
 
         try:
@@ -335,22 +444,34 @@ class MaeveAgent:
 
     async def _call_model_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Executa a inferência aplicando Dynamic Tool Binding de acordo com o domínio ativo.
+        Executa a inferência aplicando Dynamic Tool Binding e Anthropic Prompt Caching (90% desconto de tokens).
         """
         routing = state.get("routing_metadata") or {"model": "fast", "domain": "general"}
         current_intent = state.get("current_intent") or routing.get("domain", "general")
 
-        # 1. Dynamic Tool Binding: Injeta apenas ferramentas do domínio ativo (elimina Tool Bleed)
-        active_tools = get_tools_for_intent(current_intent)
         base_model = self.smart_model_base if routing.get("model") == "smart" else self.fast_model_base
+        is_anthropic = (
+            (isinstance(base_model, ChatAnthropic) if _ANTHROPIC_AVAILABLE else False)
+            or "claude" in getattr(base_model, "model_name", "").lower()
+            or "claude" in getattr(base_model, "model", "").lower()
+        )
 
+        # 1. Dynamic Tool Binding com Anthropic Tool Caching
+        active_tools = get_tools_for_intent(current_intent)
         if active_tools:
-            llm = base_model.bind_tools(active_tools)
+            if is_anthropic and _ANTHROPIC_AVAILABLE:
+                from langchain_anthropic.chat_models import convert_to_anthropic_tool
+                formatted_tools = [convert_to_anthropic_tool(t) for t in active_tools]
+                # Breakpoint de Cache: marca a última ferramenta ativa com cache_control ephemeral
+                formatted_tools[-1]["cache_control"] = {"type": "ephemeral"}
+                llm = base_model.bind(tools=formatted_tools)
+            else:
+                llm = base_model.bind_tools(active_tools)
         else:
             llm = base_model
 
-        # 2. Sanitização do Histórico
-        final_messages = _sanitize_message_history(state['messages'], limit=20)
+        # 2. Sanitização do Histórico (janela expandida para 30 mensagens sem penalidade de custo graças ao cache)
+        final_messages = _sanitize_message_history(state['messages'], limit=30)
 
         # 3. Extração de Contexto do Usuário
         user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
@@ -371,10 +492,10 @@ class MaeveAgent:
             f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs
         ])
 
-        # 5. Compilação de Contexto Temporal e System Prompt (Persona Dinâmica Assimétrica)
+        # 5. Compilação de Contexto Temporal e System Prompt (Persona Dinâmica Assimétrica + Prompt Caching)
         temporal = _resolve_temporal_context()
         active_tier = routing.get("model", "fast")
-        system_content = get_system_prompt(
+        static_prompt, dynamic_prompt = get_system_prompt_parts(
             tier=active_tier,
             date=temporal["date"],
             time=temporal["time"],
@@ -386,9 +507,30 @@ class MaeveAgent:
             obsidian_context=context_str,
         )
 
-        # 6. Invocação com Fallback Resiliente
+        if is_anthropic:
+            # Anthropic Prompt Caching: Estrutura o SystemMessage em blocos com cache_control no bloco estático (>1024 tokens)
+            system_message = SystemMessage(
+                content=[
+                    {
+                        "type": "text",
+                        "text": static_prompt,
+                        "cache_control": {"type": "ephemeral"}
+                    },
+                    {
+                        "type": "text",
+                        "text": dynamic_prompt
+                    }
+                ]
+            )
+        else:
+            system_message = SystemMessage(content=f"{static_prompt}\n\n{dynamic_prompt}")
+
+        # 6. Invocação com Fallback Resiliente e Cache de Histórico
         history = [m for m in final_messages if not isinstance(m, SystemMessage)]
-        prompt_messages = [SystemMessage(content=system_content)] + history
+        if is_anthropic and len(history) >= 2:
+            history = _apply_anthropic_history_cache(history)
+
+        prompt_messages = [system_message] + history
 
         try:
             response = await llm.ainvoke(prompt_messages)

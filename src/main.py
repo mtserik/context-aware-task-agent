@@ -38,8 +38,9 @@ async def lifespan(app: FastAPI):
         set_maeve_agent(maeve)
         logger.info("✅ Maeve Agent inicializado com persistência no Supabase.")
     except Exception as e:
-        logger.warning(f"⚠️ Erro ao conectar ao Supabase: {e}. Usando memória volátil.")
-        maeve = MaeveAgent()
+        logger.warning(f"⚠️ Erro ao conectar ao Supabase: {e}. Usando memória volátil (MemorySaver).")
+        from langgraph.checkpoint.memory import MemorySaver
+        maeve = MaeveAgent(checkpointer=MemorySaver())
         set_maeve_agent(maeve)
 
     # 2. Inicializa e inicia o Telegram Bot em background

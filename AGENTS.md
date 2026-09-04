@@ -257,6 +257,9 @@ context-aware-task-agent/
 | B17 | 🟡 High | `services/telegram_bot.py`, `agent/prompts.py` | **Telegram Markdown Truncation & Single Giant Message Bloat.** Respostas longas excediam o limite de tokens ou eram despejadas em um único balão maciço no Telegram, com quebras de sintaxe Markdown quando truncadas. | ✅ **Resolvido.** Fatiamento semântico (`split_into_semantic_chunks`) com limites humanos (800-1200 chars), cura de tags Markdown em fronteiras (`_heal_markdown_boundary`), typing indicator com pacing de 1.0s e expansão de tokens (`max_tokens=4096`). |
 | B18 | 🔴 Critical | `services/obsidian.py`, `domain/knowledge.py`, `agent/engine.py` | **Obsidian Batch Operation Network Overhead & Recursion Limit Exhaustion.** Solicitações de manipulação em massa (ex: mover 31 notas) disparavam 31 commits e pushes SSH isolados, causando concorrência no `index.lock` e ultrapassando o `recursion_limit` do LangGraph. | ✅ **Resolvido.** Implementado `batch_move_items` com commit/push único atômico no Git, adaptador `batch_move_obsidian_notes` e elevação do `recursion_limit` para 100 no LangGraph. |
 | B19 | 🔴 Critical | `services/database.py`, `main.py` | **Supabase Checkpointer Migration Active Transaction Failure & Volatile Memory Fallback.** O `AsyncConnectionPool` do `psycopg 3` iniciava sem `"autocommit": True`. Durante o setup do `AsyncPostgresSaver`, as migrações 6 a 8 executavam `CREATE INDEX CONCURRENTLY`, o que é rejeitado pelo PostgreSQL dentro de transações ativas (`ActiveSqlTransaction`). O `main.py` capturava a falha e fazia fallback silencioso para `checkpointer=None`, executando a Maeve 100% em memória volátil e mantendo as tabelas do Supabase (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`) vazias (0 registros). | ✅ **Resolvido.** Configurado `"autocommit": True` nas `kwargs` do `AsyncConnectionPool`, migrado logging para `logging.getLogger` (eliminando falhas de unicode com prints de emojis), executadas com sucesso todas as 10 migrações do LangGraph e validada a persistência contínua de threads no Supabase. |
+| B20 | 🔴 Critical | `services/database.py` | **`DuplicatePreparedStatement` on Supabase PgBouncer (Port 6543).** Com `prepare_threshold=0`, o `psycopg 3` forçava a preparação imediata de statements com nomes estáticos (`"_pg3_0"`). Como o pooler do Supabase opera em transaction mode, o pooler reutilizava conexões onde o statement já existia, estourando `DuplicatePreparedStatement: prepared statement "_pg3_0" already exists` e forçando fallback para memória volátil. | ✅ **Resolvido.** Configurado `prepare_threshold=None` nas `kwargs` do `AsyncConnectionPool`, desativando prepared statements nomeados no pooler e garantindo persistência ininterrupta. |
+| B21 | 🔴 Critical | `agent/engine.py` | **Multi-turn Context Loss on Short Confirmations (Fast-Path Trap).** A heurística de roteamento `len(text_clean) <= 20` forçava qualquer resposta afirmativa curta (`"sim"`, `"pode criar"`, `"faz isso"`, `"ok"`) para `domain: "chat"` com `active_tools = []`. Quando a Maeve propunha salvar um insight no Obsidian e o usuário confirmava, ela era desarmada das ferramentas do Vault e afirmava não ter acesso às notas. | ✅ **Resolvido.** Removida a trava de comprimento cego; implementada Heurística Contextual de Confirmação que inspeciona a mensagem anterior da Maeve para herdar o domínio correto (`knowledge`, `tasks`, `reminders`) com as ferramentas correspondentes, e enriquecido o prompt do router com `recent_context`. |
+| B22 | 🟡 High | `agent/prompts.py`, `agent/engine.py` | **Excessive Anthropic Token Consumption on Sonnet 5.** A cada turno no Telegram, o prompt completo (>1.700 tokens de persona + ferramentas + histórico) era reenviado sem cache, gerando alto custo operacional no Claude Sonnet 5. | ✅ **Resolvido.** Implementado **Anthropic Prompt Caching** com `cache_control: {"type": "ephemeral"}` particionando o system prompt em estático e dinâmico (`get_system_prompt_parts`), cacheando o schema de ferramentas e a penúltima mensagem do histórico (`_apply_anthropic_history_cache`), gerando ~90% de economia em tokens cacheados. |
 
 ### 5.5 Testing & Observability Gaps
 
@@ -650,4 +653,40 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
 - **Verificação de Escrita em Produção:** Teste de ponta a ponta com `agent.run(..., thread_id=...)` confirmou gravação imediata de checkpoints nas tabelas `checkpoints`, `checkpoint_blobs` e `checkpoint_writes`.
 
 #### 3. Qualidade & Testes de Regressão
-- Suíte completa de testes unitários e de regressão executada com 100% de sucesso.
+- Suíte completa de testes unitários e de regressão executada com 100% de sucesso.
+
+---
+
+### 9.4 Sprint 14: Correção de Perda de Contexto Multi-turn no Telegram & Anthropic Prompt Caching (2026-09-04)
+
+> **Objetivo:** Eliminar a perda de contexto em confirmações curtas ("sim", "pode criar", "faz isso") no Telegram e implementar Prompt Caching no Claude Sonnet 5 para reduzir em até 90% o consumo de tokens de entrada.
+
+#### 1. Causa Raiz da Perda de Contexto no Telegram
+- **Falha 1 — A Armadilha do Fast-Path (`engine.py`):**
+  - A heurística original considerava qualquer mensagem com `len(text_clean) <= 20` como consulta trivial/saudação direta, fixando `current_intent: "chat"` e desarmando o modelo de todas as ferramentas (`active_tools = []`).
+  - Quando a Maeve perguntava: *"Quer que eu crie uma nota no Obsidian para salvar isso?"* e o Erik respondia *"sim"* ou *"pode criar"*, o router caía no fast-path de chat, o LLM recebia 0 ferramentas e respondia dizendo que não tinha acesso ao Vault.
+- **Falha 2 — Supabase PgBouncer `DuplicatePreparedStatement` (`database.py`):**
+  - A configuração `prepare_threshold: 0` do `psycopg 3` forçava a preparação imediata de statements nomeados (`_pg3_0`).
+  - No pooler do Supabase (porta 6543, transaction pooling), conexões reutilizadas pelo pooler já continham o statement, gerando `DuplicatePreparedStatement: prepared statement "_pg3_0" already exists`.
+  - O `try...except` do lifespan capturava o erro e fazia fallback para `checkpointer=None` (ou `MemorySaver`), zerando o estado conversacional entre turnos.
+
+#### 2. Implementação das Soluções
+- **Heurística Contextual de Confirmação (`engine.py`):**
+  - O roteador agora inspeciona a última mensagem do assistente (`last_ai_msg`).
+  - Se a resposta humana for afirmativa (`"sim"`, `"pode"`, `"pode criar"`, `"faz isso"`, `"bora"`, etc.) e a Maeve havia acabado de propor salvar no Obsidian (`"obsidian"`, `"nota"`, `"vault"`), o router classifica diretamente como `domain: "knowledge"` e modelo `smart`, injetando `create_obsidian_note`.
+  - O mesmo fluxo contextual protege tarefas do TickTick (`domain: "tasks"`) e lembretes (`domain: "reminders"`).
+  - O prompt do router LLM foi enriquecido com a transcrição recente da última mensagem da Maeve (`recent_context`), resolvendo pronomes como *"isso"* e *"aquilo"*.
+- **Compatibilidade PgBouncer Supabase (`database.py`):**
+  - Ajustado `prepare_threshold: None`, desativando statements preparados no pooler transacional e eliminando o erro `DuplicatePreparedStatement`.
+  - Normalização da string de conexão para prevenir prefixos duplicados (`postgresql:postgresql://`).
+- **Anthropic Prompt Caching no Claude Sonnet 5:**
+  - **Breakpoint 1 (System Prompt):** Particionado em estático (>1.500 tokens dos 4 Pilares, ReAct e regras) e dinâmico (hora, data, contexto). O bloco estático recebe `cache_control: {"type": "ephemeral"}`, excedendo o limiar mínimo de 1.024 tokens da Anthropic.
+  - **Breakpoint 2 (Ferramentas Ativas):** A última ferramenta ativa no schema é marcada com `cache_control: {"type": "ephemeral"}` via `convert_to_anthropic_tool`.
+  - **Breakpoint 3 (Histórico Conversacional):** A penúltima mensagem do histórico é marcada com cache ephemeral via `_apply_anthropic_history_cache`, permitindo que o histórico multi-turn acumulado seja lido com 90% de desconto.
+  - Janela de histórico sanitizado expandida para 30 mensagens sem penalidade de custo.
+
+#### 3. Verificação & Qualidade
+- Suíte completa de testes de domínio (`test_domain_services.py`): 12/12 aprovados.
+- Suíte completa de testes de regressão (`test_bugfixes_regression.py`): 13/13 aprovados.
+- Suíte completa de autenticação MCP (`test_mcp_auth.py`): 11/11 aprovados.
+- Testes diagnósticos de confirmação multi-turn (`test_multiturn.py`): 8 variações afirmativas confirmadas roteando para `knowledge` com `create_obsidian_note` ativo.
