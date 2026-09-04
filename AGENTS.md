@@ -296,116 +296,141 @@ context-aware-task-agent/
 *   **[ ] Visão Computacional:** Processamento de imagens e fotos via Telegram para extração de insights no Obsidian.
 *   **[ ] Dashboard Web:** Interface administrativa para monitorar sincronização e logs do agente.
 
-### Fase 4: MCP Server — Maeve como Camada de Contexto para Antigravity 🚀🚀
+#### Fase 4: MCP Server — Maeve como Camada de Contexto & Memória para Antigravity 🚀🚀
 
-> **Objetivo Estratégico:** Transformar a Maeve de um agente conversacional isolado em uma **camada de contexto universal** que qualquer LLM/agent pode consumir via MCP. O primeiro consumidor é o **Antigravity (agy CLI)**, utilizado no dia a dia de trabalho do Erik.
+> **Objetivo Estratégico:** Transformar a Maeve de um agente conversacional isolado em uma **camada de contexto e memória universal** que qualquer LLM ou agente autônomo pode consumir via Model Context Protocol (MCP). O consumidor principal é o **Antigravity (agy CLI / IDE)**, utilizado no dia a dia de trabalho e engenharia do Erik.
 
-#### 4.1 Visão: O Paradigma "Context-as-a-Service"
+#### 4.1 Visão: O Paradigma "Host-Driven Context-as-a-Service"
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    ERIK'S WORKSPACE                              │
-│                                                                 │
-│  ┌──────────────────┐          ┌──────────────────────────┐     │
-│  │  Antigravity CLI  │  stdio   │  maeve-mcp-server        │     │
-│  │  (agy)            │◄───────►│  (FastMCP / Python)       │     │
-│  │                   │  MCP     │                          │     │
-│  │  ┌─ Gemini ──┐    │         │  ┌── Tools ────────────┐  │     │
-│  │  │ Flash/Pro │    │         │  │ memory_search       │  │     │
-│  │  │ Claude    │    │         │  │ memory_store        │  │     │
-│  │  │ Any Model │    │         │  │ get_personal_context│  │     │
-│  │  └───────────┘    │         │  │ list_today_tasks    │  │     │
-│  └──────────────────┘          │  │ create_task         │  │     │
-│                                │  │ search_knowledge    │  │     │
-│                                │  │ get_personality     │  │     │
-│                                │  │ log_decision        │  │     │
-│                                │  └─────────────────────┘  │     │
-│                                │            │              │     │
-│                                │            ▼              │     │
-│                                │  ┌── Backends ─────────┐  │     │
-│                                │  │ Obsidian Vault      │  │     │
-│                                │  │ Qdrant (Embeddings) │  │     │
-│                                │  │ TickTick API        │  │     │
-│                                │  │ Supabase (Memory)   │  │     │
-│                                │  └─────────────────────┘  │     │
-│                                └──────────────────────────┘     │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            ERIK'S WORKSPACE                                 │
+│                                                                             │
+│  ┌─────────────────────────┐                ┌────────────────────────────┐  │
+│  │   Antigravity (AGY)     │     stdio      │     maeve-mcp-server       │  │
+│  │   (Host LLM & Reasoning)│◄──────────────►│    (FastMCP / Python)      │  │
+│  │                         │      MCP       │                            │  │
+│  │  ┌─ Brain (Host LLM) ─┐ │                │  ┌── MCP Prompts ────────┐ │  │
+│  │  │ Gemini 2.5 Pro     │ │                │  │ prompt://maeve_persona│ │  │
+│  │  │ Claude 3.7 Sonnet  │ │                │  │ prompt://pair_partner │ │  │
+│  │  │ (Pensa, planeja,   │ │                │  └───────────────────────┘ │  │
+│  │  │  gera resposta)    │ │                │  ┌── MCP Resources ──────┐ │  │
+│  │  └────────────────────┘ │                │  │ maeve://system-prompt │ │  │
+│  │                         │                │  │ maeve://daily-briefing│ │  │
+│  │  *ZERO tokens gerados   │                │  │ maeve://temporal      │ │  │
+│  │   pela API da Maeve!*   │                │  └───────────────────────┘ │  │
+│  └─────────────────────────┘                │  ┌── Deterministic Tools─┐ │  │
+│                                             │  │ memory_search (Qdrant)│ │  │
+│                                             │  │ memory_store (Vault)  │ │  │
+│                                             │  │ list_today_tasks (TT) │ │  │
+│                                             │  │ create_task (TickTick)│ │  │
+│                                             │  │ batch_move_notes      │ │  │
+│                                             │  │ log_decision          │ │  │
+│                                             │  │ set_reminder (DB)     │ │  │
+│                                             │  └───────────────────────┘ │  │
+│                                             │             │              │  │
+│                                             │             ▼              │  │
+│                                             │  ┌── Pure Domain Core ───┐ │  │
+│                                             │  │ KnowledgeDomainService│ │  │
+│                                             │  │ TaskDomainService     │ │  │
+│                                             │  │ TemporalDomainService │ │  │
+│                                             │  │ ReminderDomainService │ │  │
+│                                             │  └───────────────────────┘ │  │
+│                                             │             │              │  │
+│                                             │             ▼              │  │
+│                                             │  ┌── Backends / Storage ─┐ │  │
+│                                             │  │ Obsidian Vault (Git)  │ │  │
+│                                             │  │ Qdrant (Embeddings)   │ │  │
+│                                             │  │ TickTick REST API     │ │  │
+│                                             │  │ Supabase (Postgres)   │ │  │
+│                                             │  └───────────────────────┘ │  │
+│                                             └────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**O insight central:** O Antigravity é extremamente poderoso para coding, mas não tem contexto pessoal do Erik — não sabe suas prioridades, não conhece seus projetos pessoais, não lembra de decisões passadas, não tem personalidade. A Maeve já tem tudo isso. O MCP é a ponte.
+#### 4.2 Mandato Arquitetural: Zero Duplo Custo & Execução Host-Driven (Zero-Token Principle)
 
-**Princípio de design:** O MCP server **NÃO substitui** o Antigravity. Ele **enriquece** qualquer modelo que o Antigravity use (Gemini, Claude, etc.) com:
-1. **Memória Semântica** — "O que o Erik já pesquisou/decidiu sobre X?"
-2. **Contexto Operacional** — "Quais tarefas ele tem hoje? Qual é a prioridade?"
-3. **Personalidade & Tom** — "Como a Maeve falaria isso?" (system prompt injection)
-4. **Decision Log** — "Registra que o Erik decidiu usar Approach A sobre B neste projeto."
+1. **Zero Consumo de Tokens Generativos da Maeve:**
+   - O servidor FastMCP da Maeve **NÃO realiza chamadas a modelos generativos de LLM** da infraestrutura da Maeve (como `gpt-5.6-luna`, `claude-sonnet-5`, router ou grafos ReAct do LangGraph).
+   - O servidor MCP atua estritamente como uma **Camada de Referência Determinística (Deterministic Context, Memory & Action Layer)**.
+   - A única computação via modelo de IA na Maeve é a conversão estritamente matemática da query de busca em vetor $\mathbb{R}^{1536}$ via `text-embedding-3-small` no `VectorDBService.search_context`, cujo custo computacional é insignificante ($0.00002 por 1.000 tokens) e restrito apenas ao embedding de busca, sem nenhuma geração de texto.
+2. **O Host (Antigravity) é o Cérebro Único:**
+   - O modelo de linguagem ativo e selecionado no Antigravity (seja Gemini 2.5 Pro, Claude 3.7 Sonnet, etc.) é o **único responsável pelo raciocínio, planejamento, tool use e geração textual**.
+   - **Benefício Econômico & de Performance:** Elimina-se 100% do "duplo custo" de IA (Antigravity pagando inferência e chamando uma IA intermediária na Maeve para pensar de novo). A latência cai para milissegundos ($O(1)$ para tarefas e filesystem, $O(\log N)$ para Qdrant).
+3. **Puxando a Alma e o Comportamento da Maeve (Persona & Protocolos):**
+   - Para que o Antigravity não seja um mero terminal frio, ele "incorpora" a Maeve através dos primitivos nativos de **MCP Prompts** e **MCP Resources**.
+   - O modelo do Antigravity recebe as instruções da persona da Maeve compiladas com base no fuso horário oficial de Brasília (`America/Sao_Paulo`), adotando os 4 Pilares Comportamentais (Curva Circadiana, Anti-Sycophancy/Devil's Advocate, Continuidade Episódica e Curadoria Ativa no Obsidian com regras de Markdown e LaTeX MathJax).
+4. **Desacoplamento Hexagonal Total (Bypass do LangGraph):**
+   - O módulo `src/mcp/` **NUNCA instancia `MaeveAgent`** nem carrega o grafo do LangGraph (`engine.py`).
+   - O MCP consome diretamente a **Camada de Domínio Pura** (`TaskDomainService`, `KnowledgeDomainService`, `TemporalDomainService`, `ReminderDomainService`) e os singletons do `service_registry` (`src/services/registry.py`).
 
-#### 4.2 Arquitetura Técnica do MCP Server
+#### 4.3 Ferramentas Expostas via FastMCP (Deterministic Tools)
 
-**Transporte:** `stdio` (padrão para Antigravity local).
-**Framework:** `FastMCP` (Python SDK v2+).
-**Localização:** `src/mcp/server.py` (novo módulo no monorepo da Maeve).
+Todas as ferramentas operam de forma puramente determinística (I/O, cálculos de regras de negócio, Git, APIs externas), sem invocar LLMs generativos:
 
-**Dependências dos backends:**
-- O MCP server reutiliza os serviços existentes (`ObsidianService`, `VectorDBService`, `TickTickService`, `DatabaseService`).
-- Para funcionar via stdio sem o servidor FastAPI rodando, os serviços precisam ser inicializáveis de forma independente (reforça o fix A2 — singleton registry).
+| Tool Name | Descrição | Backend / Domínio | Garantia Determinística |
+|:----------|:----------|:------------------|:------------------------|
+| `memory_search` | Busca semântica no Segundo Cérebro do Erik no Obsidian. Recebe a query em linguagem natural, gera o embedding matemático e retorna os chunks mais similares com score de similaridade e caminho relativo. | `VectorDBService` + Qdrant | Embedding estritamente vetorial; zero geração LLM. Retorna trechos Markdown brutos. |
+| `memory_store` | Cria ou atualiza notas de aprendizado, insights ou documentação no Obsidian com metadados YAML e formatação LaTeX. | `KnowledgeDomainService` + Git | Escrita em disco com sanitização `_safe_resolve` e push Git assíncrono. |
+| `get_personal_context` | Retorna um bloco de contexto pessoal e operacional estruturado: data/hora oficial de Brasília (`America/Sao_Paulo`), momento circadiano, tarefas prioritárias de hoje no TickTick e preferências do usuário. | `TemporalDomainService` + `TaskDomainService` + Supabase | Agregação pura de dados em memória/REST. |
+| `list_today_tasks` | Lista as tarefas pendentes do Erik para hoje no TickTick, com prioridade, status e time-blocking. | `TaskDomainService` | Chamada REST autenticada direta ao TickTick via connection pooling. |
+| `create_task` | Cria uma nova tarefa no TickTick diretamente a partir do contexto de trabalho no Antigravity. | `TaskDomainService` | Criação REST com normalização de datas e prioridades. |
+| `batch_move_obsidian_notes` | Movimenta um lote de notas no Obsidian atomicamente, com resolução de colisões e um único commit/push Git final. | `KnowledgeDomainService` | I/O em lote + 1 único commit/push (evita locks e sobrecarga de rede). |
+| `search_knowledge` | Busca textual exata (full-text/regex) dentro dos arquivos Markdown do Obsidian Vault. | `KnowledgeDomainService` | Busca no filesystem local via Python/ripgrep, ultra-rápida e sem embeddings. |
+| `log_decision` | Registra uma decisão técnica ou arquitetural em `Decisões/` no Obsidian com template padronizado (Contexto, Opções, Decisão, Rationale). | `KnowledgeDomainService` | Escrita atômica em nota `.md` com frontmatter estruturado. |
+| `set_reminder` | Agenda um lembrete no Supabase que será notificado proativamente via Telegram pelo worker de background da Maeve. | `ReminderDomainService` | Insert assíncrono no Postgres pooler da Supabase. |
 
-#### 4.3 Tools Expostas via MCP
+#### 4.4 Primitivos de Contexto & Comportamento (MCP Prompts & Resources)
 
-| Tool Name | Descrição | Backend | Prioridade |
-|:----------|:----------|:--------|:-----------|
-| `memory_search` | Busca semântica no Segundo Cérebro do Erik. Recebe uma query em linguagem natural e retorna notas/contextos relevantes do Obsidian (via Qdrant). | VectorDBService + ObsidianService | P0 |
-| `memory_store` | Salva um novo insight, decisão ou aprendizado no Obsidian. O agente pode chamar isso quando o Erik resolve um bug complexo ou toma uma decisão arquitetural. | ObsidianService | P0 |
-| `get_personal_context` | Retorna um bloco de contexto pessoal formatado: data/hora, tarefas do dia, humor recente, projetos ativos. Ideal para injetar no system prompt. | TickTickService + DatabaseService | P0 |
-| `list_today_tasks` | Lista as tarefas pendentes do Erik para hoje no TickTick, com prioridade e status. | TickTickService | P1 |
-| `create_task` | Cria uma tarefa no TickTick a partir do contexto de trabalho (ex: "Criar issue para refatorar módulo X"). | TickTickService | P1 |
-| `search_knowledge` | Busca full-text nas notas do Obsidian (sem embeddings, mais rápido para buscas exatas). | ObsidianService | P1 |
-| `get_maeve_personality` | Retorna o system prompt / persona da Maeve para que o modelo do Antigravity possa adotar o mesmo tom e estilo. | Prompts module | P2 |
-| `log_decision` | Registra uma decisão técnica ou pessoal no Obsidian com timestamp, contexto e rationale. Cria automaticamente uma nota em `Decisões/`. | ObsidianService | P2 |
-| `get_project_notes` | Retorna as notas do Obsidian relacionadas a um projeto específico (por pasta ou tag). | ObsidianService | P2 |
-| `set_reminder` | Agenda um lembrete que será enviado via Telegram. | DatabaseService | P2 |
+Os primitivos de MCP permitem ao Antigravity puxar dinamicamente a alma, o tom e a memória de contexto da Maeve:
 
-#### 4.4 Resources Expostos via MCP
+##### MCP Prompts (Injeção de Persona no Host LLM)
+*   **`maeve_persona`**: Compila as diretrizes da Maeve para o modelo do Antigravity, parametrizado com o horário de Brasília atual, aplicando o tom de dev peer brasileira e a postura de Staff Engineer (Anti-Sycophancy contra overengineering).
+*   **`maeve_pair_programmer`**: Prompt focado em pair programming profundo, combinando a atitude crítica de Staff Engineer da Maeve com as notas do projeto atual recuperadas do Obsidian.
 
-| Resource URI | Descrição | Tipo |
-|:-------------|:----------|:-----|
-| `maeve://personality/system-prompt` | System prompt completo da Maeve com persona, regras comportamentais e contexto temporal. | text |
-| `maeve://context/daily-briefing` | Briefing do dia: data, tarefas, lembretes, última atividade. | text |
-| `maeve://knowledge/{path}` | Conteúdo de uma nota específica do Obsidian pelo caminho relativo. | text |
+##### MCP Resources (Leitura de Dados sob Demanda)
+*   **`maeve://personality/system-prompt`**: O system prompt completo compilado da Maeve, para ser referenciado por agentes e subagentes do Antigravity.
+*   **`maeve://context/daily-briefing`**: Briefing vivo do dia (data/hora de Brasília, tarefas do TickTick, lembretes ativos e prioridades).
+*   **`maeve://context/temporal`**: Metadados temporais puros (dia civil, timezone `America/Sao_Paulo`, dia da semana, momento circadiano).
+*   **`maeve://knowledge/{path}`**: Conteúdo textual bruto de qualquer nota Markdown do Vault do Obsidian pelo caminho relativo.
 
-#### 4.5 Implementação: Estrutura de Arquivos
+#### 4.5 Estrutura de Diretórios do Servidor MCP
 
 ```text
 src/
 ├── mcp/
 │   ├── __init__.py
-│   ├── server.py          # FastMCP server definition + tool registrations
-│   ├── tools/
+│   ├── server.py              # Instância FastMCP + stdio transport + lifecycle
+│   ├── prompts/               # MCP Prompts (injeção de persona e briefing no Host LLM)
 │   │   ├── __init__.py
-│   │   ├── memory.py      # memory_search, memory_store, search_knowledge
-│   │   ├── tasks.py       # list_today_tasks, create_task
-│   │   ├── context.py     # get_personal_context, get_maeve_personality
-│   │   └── decisions.py   # log_decision, get_project_notes
-│   └── resources/
+│   │   └── persona.py         # maeve_persona, maeve_pair_programmer
+│   ├── resources/             # MCP Resources (briefing, temporal, notas)
+│   │   ├── __init__.py
+│   │   └── providers.py       # maeve://personality, maeve://context, maeve://knowledge
+│   └── tools/                 # Inbound FastMCP Tool Adapters (puramente determinísticos)
 │       ├── __init__.py
-│       └── providers.py   # Resource providers for personality, briefing, notes
-├── services/
-│   ├── registry.py        # NEW: Singleton service registry (fixes A2)
-│   └── ... (existing services)
+│       ├── memory.py          # memory_search, memory_store, search_knowledge
+│       ├── tasks.py           # list_today_tasks, create_task
+│       ├── context.py         # get_personal_context, set_reminder
+│       └── decisions.py       # log_decision, batch_move_obsidian_notes
+├── domain/                    # Pure Core Business Domain (reutilizado integralmente)
+└── services/
+    ├── registry.py            # Singleton Service Registry (desacoplado do FastAPI)
+    └── ...                    # Backends (Obsidian, Qdrant, TickTick, Supabase)
 ```
 
-#### 4.6 Configuração no Antigravity
+#### 4.6 Configuração do Antigravity CLI / IDE
 
-Arquivo: `~/.gemini/config/mcp_config.json`
+Arquivo: `~/.gemini/config/mcp_config.json` (ou configuração equivalente de MCP do Antigravity):
 
 ```json
 {
   "mcpServers": {
     "maeve": {
-      "command": "python",
+      "command": "E:/mtserik/Documents/Projetos/context-aware-task-agent/.venv/Scripts/python.exe",
       "args": ["-m", "src.mcp.server"],
       "env": {
-        "OBSIDIAN_VAULT_PATH": "E:/mtserik/Documents/ObsidianVault",
+        "OBSIDIAN_VAULT_PATH": "E:/mtserik/Documents/Projetos/context-aware-task-agent/obsidian_vault",
         "QDRANT_URL": "http://localhost:6333",
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
         "TICKTICK_ACCESS_TOKEN": "${TICKTICK_ACCESS_TOKEN}",
@@ -416,93 +441,75 @@ Arquivo: `~/.gemini/config/mcp_config.json`
 }
 ```
 
-**Notas de configuração:**
-- O `command` aponta para o Python do venv do projeto Maeve, ou usa `uv run` se gerenciado por uv.
-- As variáveis `${...}` serão resolvidas pelo ambiente do shell do Erik.
-- O server roda como processo stdio — o Antigravity spawna ele automaticamente.
+> **Nota de Custos & Chaves:**
+> A `OPENAI_API_KEY` configurada no ambiente do servidor MCP é utilizada **exclusivamente** para gerar embeddings de busca no Qdrant (`text-embedding-3-small`). Nenhuma chamada para chat completion (`gpt-4o`, `gpt-5.6-luna`, etc.) é feita pelo servidor MCP. O modelo de raciocínio é 100% financiado pelo client host (Antigravity).
 
-#### 4.7 Exemplo de Fluxo de Uso
+#### 4.7 Exemplo de Fluxo Operacional Host-Driven
 
-**Cenário:** Erik está debugando um erro de serialização no trabalho.
+**Cenário:** Erik está trabalhando no Antigravity e pergunta sobre um padrão arquitetural previamente adotado.
 
-1. Erik digita no Antigravity: *"Maeve, já enfrentei esse tipo de erro antes?"*
-2. O modelo do AGY detecta a tool `memory_search` e chama:
-   ```json
-   {"name": "memory_search", "arguments": {"query": "erro serialização JSON Python"}}
-   ```
-3. O MCP server executa uma busca vetorial no Qdrant → encontra uma nota do Obsidian: *"Bug Fix: Serialização de datetime em FastAPI (2026-07-15)"*.
-4. O modelo recebe o contexto e responde: *"Sim! Em julho você resolveu um problema parecido no projeto FastAPI. A solução foi usar um custom JSONEncoder..."*
+1. **Erik no Antigravity:** *"Maeve, qual padrão de concorrência e pooling adotamos no serviço de banco de dados?"*
+2. **Modelo do Antigravity (Gemini 2.5 Pro / Claude 3.7 Sonnet):**
+   - Identifica a intenção e invoca a ferramenta MCP da Maeve:
+     ```json
+     {"name": "memory_search", "arguments": {"query": "padrão concorrência pooling database service postgres"}}
+     ```
+3. **Maeve FastMCP Server (stdio):**
+   - Gera o vetor matemático da query via `VectorDBService`.
+   - Consulta os vizinhos no Qdrant em ~15ms.
+   - Retorna o trecho exato da nota do Obsidian e do log arquitetural (B14/B19: `AsyncConnectionPool`, `autocommit=True`, `prepare_threshold=0`).
+4. **Modelo do Antigravity:**
+   - Adota a persona da Maeve (conforme prompt configurado) e responde diretamente no terminal do Antigravity com o tom e estilo dela.
+5. **Resultado:** Zero tokens de chat completion na OpenAI/Anthropic faturados na conta da Maeve. Execução instantânea e contexto unificado.
 
-**Cenário:** Erik termina uma refatoração importante.
+#### 4.8 Roadmap de Implementação: Sprints 13 & 14
 
-1. Erik digita: *"Registra que decidi usar o padrão Repository ao invés de Active Record neste projeto."*
-2. O AGY chama `log_decision`:
-   ```json
-   {"name": "log_decision", "arguments": {
-     "title": "Repository Pattern vs Active Record",
-     "context": "Projeto XYZ - Refatoração da camada de dados",
-     "decision": "Repository Pattern",
-     "rationale": "Melhor testabilidade e separação de concerns"
-   }}
-   ```
-3. A Maeve cria `Decisões/2026-09-03_Repository-Pattern-vs-Active-Record.md` no Obsidian com frontmatter YAML e faz git push.
+**Sprint 13: FastMCP Server Core — Zero-Token Context & Memory Layer** — Estimativa: 2 dias
+- [ ] Adicionar `fastmcp` ao `requirements.txt`.
+- [ ] Criar `src/mcp/server.py` com FastMCP e transporte stdio.
+- [ ] Implementar ferramentas determinísticas P0 conectadas à camada de domínio:
+  - `memory_search` (`VectorDBService.search_context`).
+  - `memory_store` (`KnowledgeDomainService.create_note`).
+  - `get_personal_context` (`TemporalDomainService` + `TaskDomainService`).
+  - `list_today_tasks` e `create_task` (`TaskDomainService`).
+- [ ] Implementar resources essenciais:
+  - `maeve://personality/system-prompt`.
+  - `maeve://context/daily-briefing`.
+- [ ] Testar localmente com `fastmcp dev src/mcp/server.py` ou client de teste stdio.
 
-#### 4.8 Plano de Implementação (Sprints)
-
-**Sprint 1: Fundação (Pré-requisitos)** — Estimativa: 2-3 dias
-- [ ] Criar `src/services/registry.py` com singleton registry (fix A2)
-- [ ] Eliminar circular imports no `telegram_bot.py` (fix A3)
-- [ ] Extrair tools de `engine.py` para módulos separados (fix A1)
-- [ ] Adicionar `fastmcp` ao `requirements.txt`
-
-**Sprint 2: MCP Server Core (P0 Tools)** — Estimativa: 2-3 dias
-- [ ] Criar `src/mcp/server.py` com FastMCP + stdio transport
-- [ ] Implementar `memory_search` (wrapper do `VectorDBService.search_context`)
-- [ ] Implementar `memory_store` (wrapper do `ObsidianService.write_note`)
-- [ ] Implementar `get_personal_context` (agregação de TickTick + datetime + mood)
-- [ ] Testar com `mcp dev src/mcp/server.py`
-
-**Sprint 3: Integração AGY + Tools P1** — Estimativa: 1-2 dias
-- [ ] Configurar `~/.gemini/config/mcp_config.json` apontando para o server
-- [ ] Implementar `list_today_tasks` e `create_task`
-- [ ] Implementar `search_knowledge` (full-text search no Obsidian)
-- [ ] Validar end-to-end: AGY → MCP → Qdrant/TickTick → resposta
-
-**Sprint 4: Resources + Tools P2** — Estimativa: 2 dias
-- [ ] Implementar resource providers (personality, briefing, knowledge)
-- [ ] Implementar `log_decision` e `get_project_notes`
-- [ ] Implementar `get_maeve_personality` e `set_reminder`
-- [ ] Documentar usage patterns no README
-
-**Sprint 5: Polimento** — Estimativa: 1-2 dias
-- [ ] Structured logging no MCP server (stderr only!)
-- [ ] Error handling robusto (timeouts, fallbacks)
-- [ ] Testes unitários para cada tool
-- [ ] Performance profiling (latência por tool call)
+**Sprint 14: Integração Antigravity, MCP Prompts & Expansão Operacional** — Estimativa: 2 dias
+- [ ] Implementar MCP Prompts:
+  - `prompt://maeve_persona` (com cálculo circadiano dinâmico de `America/Sao_Paulo`).
+  - `prompt://maeve_pair_programmer`.
+- [ ] Implementar ferramentas complementares P1/P2:
+  - `batch_move_obsidian_notes` (movimentação atômica em lote).
+  - `log_decision` (template estruturado em `Decisões/`).
+  - `search_knowledge` (busca de texto exata no filesystem).
+  - `set_reminder` (agendamento no Supabase para worker do Telegram).
+- [ ] Configuração e validação end-to-end dentro do Antigravity CLI (`agy`).
+- [ ] Documentação de uso no README e testes de regressão.
 
 ---
 
-## 7. Melhorias Prioritárias (Quick Wins)
+## 7. Status das Melhorias Estruturais & Pré-Requisitos
 
-Independente do MCP, estas melhorias devem ser aplicadas para a saúde geral do projeto:
+Todas as melhorias arquiteturais e de qualidade que bloqueavam o servidor MCP foram completamente sanadas nas Sprints 6 a 12:
 
-### 7.1 Imediatas (Bloqueiam o MCP)
-1. **Service Registry** — Centralizar instâncias dos serviços. Sem isso, o MCP server não pode reutilizar serviços sem duplicação.
-2. **Async subprocess** — `obsidian.py` usa `subprocess.run()` em métodos `async`. Trocar para `asyncio.create_subprocess_exec()`.
-3. **Async embeddings** — `vector_db.py` L46 usa `embed_documents()` sync. Trocar para `aembed_documents()`.
+### 7.1 Pré-requisitos Estruturais do MCP (100% Concluídos ✅)
+1. **[✅] Service Registry** — Centralizadas instâncias singletons lazy em `src/services/registry.py`. Permite que o servidor FastMCP importe serviços sem instanciar duplicatas ou acoplar ao FastAPI.
+2. **[✅] Async subprocess** — Operações do Git no `obsidian.py` executadas sem travar o event loop via `asyncio.to_thread`.
+3. **[✅] Async embeddings** — `vector_db.py` utiliza `aembed_documents()` e `aembed_query()` nativamente assíncronos.
+4. **[✅] Clean Hexagonal Architecture & Domain Core** — Camada de negócio pura em `src/domain/` isolada de frameworks. Permite que as ferramentas do FastMCP chamem métodos de domínio diretamente sem passar pelo LangGraph.
 
-### 7.2 Importantes (Melhoram qualidade geral)
-4. **Model names em env vars** — Tornar `gpt-4o-mini` e `gpt-4o` configuráveis.
-5. **Lifespan migration** — Trocar `@app.on_event` por `@app.lifespan`.
-6. **Pin dependencies** — Adicionar versões no `requirements.txt`.
-7. **Remove dead code** — `notion.py`, `chat.py`, `requests` dependency.
-8. **Health endpoint** — `GET /health` com status de DB e Qdrant.
-
-### 7.3 Desejáveis (Qualidade de vida)
-9. **Structured logging** — Substituir `print()` por `logging` com JSON formatter.
-10. **Stable vector IDs** — Usar `uuid5` ao invés de `hash()` para point IDs no Qdrant.
-11. **httpx session reuse** — Criar client persistente no `TickTickService`.
-12. **Router heuristics** — Pre-filter antes do LLM call para mensagens triviais.
+### 7.2 Confiabilidade e Operação (100% Concluídos ✅)
+5. **[✅] Model names em env vars** — `MAEVE_FAST_MODEL`, `MAEVE_SMART_MODEL` e `MAEVE_ROUTER_MODEL` configuráveis via ambiente.
+6. **[✅] Lifespan migration** — Ciclo de vida migrado para `@app.lifespan` com fechamento gracioso de pools.
+7. **[✅] Pin dependencies** — Todas as dependências pinadas no `requirements.txt`.
+8. **[✅] Remove dead code** — Código legado de Notion e chat CLI síncrono removidos.
+9. **[✅] Health endpoint** — `GET /health` e `GET /` ativos validando pool SQL e status.
+10. **[✅] Stable vector IDs** — Migrado para `uuid5` determinístico no Qdrant.
+11. **[✅] httpx session reuse** — Connection pooling persistente no `TickTickService`.
+12. **[✅] Router heuristics** — Fast-Path $O(1)$ ativo para saudações e mensagens curtas.
 
 ---
 
@@ -511,11 +518,11 @@ Independente do MCP, estas melhorias devem ser aplicadas para a saúde geral do 
 When initializing a new session or entering Agent Mode inside this repository, your first task is to read this file (AGENTS.md) along with `docker-compose.yml` to align your internal context window.
 
 **Context priorities:**
-1. Read Section 5 (Code Quality Audit) to understand current tech debt.
-2. Read Section 6.4 (MCP Server Plan) to understand the next major feature.
-3. Read Section 7 (Quick Wins) to know what refactoring is needed first.
+1. Read Section 0 (Engineering Charter & Staff Persona) for clean code and architectural mandates.
+2. Read Section 4 (Fase 4: MCP Server) to understand the **Zero-Token Host-Driven MCP Architecture**.
+3. Read Section 9 (Sprint Ledger) to know recent bug fixes (B1 to B19) and technical history.
 
-Greet Erik, acknowledge the current structural status of the project, and guide him based on where we are in the roadmap. The immediate priority is **Fase 4: MCP Server** with the prerequisite refactoring from Section 7.1.
+Greet Erik, acknowledge the current structural status of the project, and guide him based on where we are in the roadmap. The immediate priority is **Sprint 13: FastMCP Server Core — Zero-Token Context & Memory Layer**.
 
 ---
 
