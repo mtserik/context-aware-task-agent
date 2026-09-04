@@ -464,30 +464,34 @@ Arquivo: `~/.gemini/config/mcp_config.json` (ou configuração equivalente de MC
 
 #### 4.8 Roadmap de Implementação: Sprints 13 & 14
 
-**Sprint 13: FastMCP Server Core — Zero-Token Context & Memory Layer** — Estimativa: 2 dias
-- [ ] Adicionar `fastmcp` ao `requirements.txt`.
-- [ ] Criar `src/mcp/server.py` com FastMCP e transporte stdio.
-- [ ] Implementar ferramentas determinísticas P0 conectadas à camada de domínio:
-  - `memory_search` (`VectorDBService.search_context`).
-  - `memory_store` (`KnowledgeDomainService.create_note`).
-  - `get_personal_context` (`TemporalDomainService` + `TaskDomainService`).
-  - `list_today_tasks` e `create_task` (`TaskDomainService`).
-- [ ] Implementar resources essenciais:
-  - `maeve://personality/system-prompt`.
-  - `maeve://context/daily-briefing`.
-- [ ] Testar localmente com `fastmcp dev src/mcp/server.py` ou client de teste stdio.
+**Sprint 13: FastMCP Server Core — Zero-Token Context & Memory Layer** ✅ **CONCLUÍDO** — branch `feat/sprint-13-mcp-server-core` → commit `d1cb5e5`
+- [x] `mcp==1.27.1` já inclui `mcp.server.fastmcp.FastMCP` (sem dependência adicional necessária).
+- [x] `src/mcp/server.py` — FastMCP entry point com transporte stdio e composição de registradores.
+- [x] Ferramentas determinísticas P0 em `src/mcp/tools/` (zero LLM generativo):
+  - `memory_search` → `VectorDBService.search_context` (embedding vetorial puro, O(log N) Qdrant).
+  - `memory_store` → `KnowledgeDomainService.create_note` (Obsidian Vault + Git commit).
+  - `search_knowledge` → busca textual no filesystem do Vault (zero embeddings).
+  - `get_personal_context` → `TemporalDomainService` + `TaskDomainService` (agregação pura).
+  - `list_today_tasks` + `create_task` → `TaskDomainService` (REST TickTick, lookback 7d).
+  - `set_reminder` → `ReminderDomainService` (insert Supabase PostgreSQL).
+  - `log_decision` → ADR estruturado em `Decisões/` no Vault (template padrão).
+  - `batch_move_obsidian_notes` → `KnowledgeDomainService.batch_move_notes` (1 commit atômico).
+- [x] Resources em `src/mcp/resources/providers.py`:
+  - `maeve://personality/system-prompt` — system prompt compilado com contexto temporal de Brasília.
+  - `maeve://context/daily-briefing` — briefing operacional do dia (TickTick + temporal).
+  - `maeve://context/temporal` — metadados temporais puros (timezone, período circadiano).
+  - `maeve://knowledge/{path}` — conteúdo bruto de notas Markdown do Vault sob demanda.
+- [x] MCP Prompts em `src/mcp/prompts/persona.py`:
+  - `maeve_persona` — injeção completa dos 4 Pilares Comportamentais no host LLM.
+  - `maeve_pair_programmer` — modo pair programming com contexto vetorial do Vault.
+- [x] Smoke test: todos os 11 módulos passaram em `py_compile` e importação de integração.
 
-**Sprint 14: Integração Antigravity, MCP Prompts & Expansão Operacional** — Estimativa: 2 dias
-- [ ] Implementar MCP Prompts:
-  - `prompt://maeve_persona` (com cálculo circadiano dinâmico de `America/Sao_Paulo`).
-  - `prompt://maeve_pair_programmer`.
-- [ ] Implementar ferramentas complementares P1/P2:
-  - `batch_move_obsidian_notes` (movimentação atômica em lote).
-  - `log_decision` (template estruturado em `Decisões/`).
-  - `search_knowledge` (busca de texto exata no filesystem).
-  - `set_reminder` (agendamento no Supabase para worker do Telegram).
-- [ ] Configuração e validação end-to-end dentro do Antigravity CLI (`agy`).
-- [ ] Documentação de uso no README e testes de regressão.
+**Sprint 14: Integração Antigravity CLI & Validação End-to-End** — Próximo
+- [ ] Configurar `mcp_config.json` no Antigravity CLI (ver Seção 4.6 para path do venv e variáveis).
+- [ ] Validação end-to-end: conectar Antigravity → stdio → `python -m src.mcp.server`.
+- [ ] Smoke test de cada tool e resource contra backends reais (Qdrant, TickTick, Supabase, Obsidian).
+- [ ] Testes de regressão: `src/test/test_mcp_smoke.py` cobrindo ferramentas P0.
+- [ ] Documentação de uso no README (seção "Usando a Maeve no Antigravity via MCP").
 
 ---
 
