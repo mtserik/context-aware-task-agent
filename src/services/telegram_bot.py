@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import tempfile
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,6 +12,41 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
+def format_telegram_markdown(text: str) -> str:
+    """
+    Normaliza a saída Markdown para o padrão estrito do Telegram (Markdown v1):
+    - Converte headers Markdown ('# Título', '## Título') em negrito '*Título*'.
+    - Converte negrito padrão ('**texto**') para negrito Telegram ('*texto*').
+    - Preserva intactos blocos de código (``` e `).
+    """
+    if not text:
+        return ""
+
+    # 1. Isola blocos de código com placeholders para não alterar conteúdo técnico interno
+    code_blocks = []
+    def save_code_block(match):
+        code_blocks.append(match.group(0))
+        return f"@@CODE_BLOCK_{len(code_blocks)-1}@@"
+
+    # Salva blocos pré-formatados (```...```) e código inline (`...`)
+    processed = re.sub(r"```[\s\S]*?```", save_code_block, text)
+    processed = re.sub(r"`[^`\n]+`", save_code_block, processed)
+
+    # 2. Converte headers (# Titulo, ## Titulo, ### Titulo) em negrito (*Titulo*)
+    processed = re.sub(r"^[ \t]*#{1,6}\s+(.+?)[ \t]*$", r"*\1*", processed, flags=re.MULTILINE)
+
+    # 3. Converte negrito Markdown padrão (**texto**) para negrito Telegram (*texto*)
+    processed = re.sub(r"\*\*(.+?)\*\*", r"*\1*", processed)
+
+    # 4. Remove marcações triplas redundantes (***texto*** -> *texto*)
+    processed = re.sub(r"\*{3,}(.+?)\*{3,}", r"*\1*", processed)
+
+    # 5. Restaura os blocos de código intactos
+    for i, block in enumerate(code_blocks):
+        processed = processed.replace(f"@@CODE_BLOCK_{i}@@", block)
+
+    return processed
 
 class TelegramService:
     def __init__(self):
@@ -38,25 +74,35 @@ class TelegramService:
 
     async def _send_long_message(self, messageable, text: str, **kwargs):
         """
-        Envia mensagens dividindo em blocos de até 4000 caracteres para respeitar o limite do Telegram (4096).
+        Envia mensagens dividindo em blocos de até 4000 caracteres para respeitar o limite do Telegram (4096),
+        aplicando formatação Markdown nativa do Telegram com fallback automático para texto puro em caso de erro de parse.
         """
+        formatted_text = format_telegram_markdown(text)
         max_len = 4000
-        if len(text) <= max_len:
-            return await messageable.reply_text(text, **kwargs)
 
-        chunks = []
-        remaining = text
-        while len(remaining) > max_len:
-            split_idx = remaining.rfind("\n", 0, max_len)
-            if split_idx == -1 or split_idx < max_len // 2:
-                split_idx = max_len
-            chunks.append(remaining[:split_idx])
-            remaining = remaining[split_idx:].lstrip("\n")
-        if remaining:
-            chunks.append(remaining)
+        if len(formatted_text) <= max_len:
+            chunks = [formatted_text]
+        else:
+            chunks = []
+            remaining = formatted_text
+            while len(remaining) > max_len:
+                split_idx = remaining.rfind("\n", 0, max_len)
+                if split_idx == -1 or split_idx < max_len // 2:
+                    split_idx = max_len
+                chunks.append(remaining[:split_idx])
+                remaining = remaining[split_idx:].lstrip("\n")
+            if remaining:
+                chunks.append(remaining)
 
         for chunk in chunks:
-            await messageable.reply_text(chunk, **kwargs)
+            try:
+                await messageable.reply_text(chunk, parse_mode="Markdown", **kwargs)
+            except Exception as md_err:
+                logging.warning(f"Falha ao enviar com parse_mode='Markdown' ({md_err}). Enviando como texto simples...")
+                try:
+                    await messageable.reply_text(chunk, **kwargs)
+                except Exception as send_err:
+                    logging.error(f"Erro definitivo ao enviar chunk para o Telegram: {send_err}")
 
     async def _respond_with_voice(self, text: str, update: Update):
         """Converte texto em áudio e envia para o usuário."""

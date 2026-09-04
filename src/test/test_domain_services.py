@@ -242,6 +242,53 @@ def test_extract_text_from_message_resilience():
     print("[OK] test_extract_text_from_message_resilience PASSOU")
 
 
+def test_format_telegram_markdown_normalization():
+    """Valida se format_telegram_markdown converte cabeçalhos, negrito e preserva blocos de código."""
+    from src.services.telegram_bot import format_telegram_markdown
+
+    # 1. Conversão de Headers
+    assert format_telegram_markdown("# Título Principal") == "*Título Principal*"
+    assert format_telegram_markdown("## Subtítulo") == "*Subtítulo*"
+    assert format_telegram_markdown("### Seção Técnica") == "*Seção Técnica*"
+
+    # 2. Conversão de Negrito (**texto** -> *texto*)
+    assert format_telegram_markdown("Isso é **muito importante**!") == "Isso é *muito importante*!"
+
+    # 3. Preservação de Código Inline e Blocos
+    code_inline = "O parâmetro `user_id` não deve ser alterado."
+    assert format_telegram_markdown(code_inline) == code_inline
+
+    code_block = "```python\ndef run_query():\n    return 'ok'\n```"
+    assert format_telegram_markdown(code_block) == code_block
+
+    # 4. Combinação de Header, Negrito e Código
+    mixed_input = (
+        "## Visão Geral\n"
+        "Aqui está o **plano de ação**:\n"
+        "- Executar `db_sync` no container.\n"
+        "```bash\n"
+        "docker compose restart\n"
+        "```\n"
+        "Prontinho!"
+    )
+    expected_output = (
+        "*Visão Geral*\n"
+        "Aqui está o *plano de ação*:\n"
+        "- Executar `db_sync` no container.\n"
+        "```bash\n"
+        "docker compose restart\n"
+        "```\n"
+        "Prontinho!"
+    )
+    assert format_telegram_markdown(mixed_input) == expected_output
+
+    # 5. Casos vazios
+    assert format_telegram_markdown("") == ""
+    assert format_telegram_markdown(None) == ""
+
+    print("[OK] test_format_telegram_markdown_normalization PASSOU")
+
+
 if __name__ == "__main__":
     test_dynamic_tool_binding_subsets()
     test_task_domain_parent_project_inheritance()
@@ -252,4 +299,5 @@ if __name__ == "__main__":
     test_temporal_context_and_timezone_handling()
     test_asymmetric_persona_prompt_system()
     test_extract_text_from_message_resilience()
+    test_format_telegram_markdown_normalization()
     print("\n>>> TODOS OS TESTES UNITARIOS DE DOMINIO PASSARAM! <<<")

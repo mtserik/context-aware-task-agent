@@ -194,6 +194,15 @@ def test_extract_text_from_message_handling():
     assert extract_text_from_message(cr) == "Resultado do ChatResult"
     print("[OK] test_extract_text_from_message_handling PASSOU")
 
+def test_telegram_markdown_formatting():
+    """Test B15: Telegram Markdown v1 normalization for headers, bold, and code block preservation."""
+    from src.services.telegram_bot import format_telegram_markdown
+
+    raw = "### Resumo\nO **deploy** foi um sucesso com `status_ok`.\n```sh\necho done\n```"
+    expected = "*Resumo*\nO *deploy* foi um sucesso com `status_ok`.\n```sh\necho done\n```"
+    assert format_telegram_markdown(raw) == expected
+    print("[OK] test_telegram_markdown_formatting PASSOU")
+
 if __name__ == "__main__":
     test_obsidian_path_traversal_blocked()
     test_ticktick_date_normalization()
@@ -205,4 +214,5 @@ if __name__ == "__main__":
     test_service_registry_singletons()
     test_selective_rag_skipping()
     test_extract_text_from_message_handling()
+    test_telegram_markdown_formatting()
     print("\n>>> TODOS OS TESTES DE REGRESSAO PASSARAM COM SUCESSO! <<<")
