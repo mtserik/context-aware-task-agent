@@ -271,12 +271,12 @@ context-aware-task-agent/
 *   **[✅] Pesquisa Web Integrada:** Motores de busca rápida e Deep Research (Tavily) com feedback visual no Telegram.
 *   **[✅] Deploy Cloud:** Infraestrutura pronta para Railway/Render com segurança via API Key e SSH dinâmico.
 
-### Fase 3: Inteligência Avançada & Otimização (Em Progresso 🔧)
-*   **[✅] Roteamento de Modelos:** Lógica dinâmica para alternar entre GPT-4o-mini (rápido/barato) e GPT-4o (complexo/deep reasoning) conforme a carga cognitiva da tarefa.
+### Fase 3: Inteligência Avançada & Otimização (Concluída ✅)
+*   **[✅] Roteamento de Modelos & Multi-Provider:** Arquitetura Híbrida com Factory polimórfica (`create_chat_model` em `engine.py`). Roteamento dinâmico combinando OpenAI (GPT-5.6 Luna como modelo Fast/Router) e Anthropic (Claude Sonnet como modelo Smart/Deep Reasoning para Obsidian e RAG), com fallback gracioso e zero acoplamento.
 *   **[✅] Infraestrutura Obsidian (Cloud):** Railway Volumes para manter o Vault clonado permanentemente. Estratégia de `git init` para compatibilidade com volumes.
 *   **[✅] Consciência Temporal:** Injeção dinâmica de data, hora, dia da semana e período do dia para saudações e priorização contextual.
-*   **[🔧] Refactoring Estrutural:** Resolver os problemas de qualidade documentados na Seção 5 (God Module, circular imports, serviços duplicados).
-*   **[🚀] Naturalidade & Personalidade:**
+*   **[✅] Refactoring Estrutural:** Clean Hexagonal Architecture implementada. Camada de Domínio Pura (`src/domain/`), Adaptadores Inbound (`src/agent/tools/`), REST modular (`src/api/routes/`), e eliminação do God Module (`engine.py`).
+*   **[🚀] Naturalidade & Personalidade (Próxima Fase):**
     *   **Memória de Humor:** Detecção de sentimento nas últimas mensagens para ajuste automático de tom (Empatia Contextual).
     *   **Proatividade de Follow-up:** Perguntas inteligentes sobre eventos passados no dia do Erik.
     *   **Variação de Energia:** Tom mais técnico em horário comercial e mais reflexivo/relaxado à noite.

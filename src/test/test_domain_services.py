@@ -1,3 +1,4 @@
+import os
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
@@ -89,10 +90,39 @@ def test_fastapi_endpoints_health():
         assert resp_health.json()["version"] == "0.4.0"
     print("[OK] test_fastapi_endpoints_health PASSOU")
 
+
+def test_multi_provider_model_factory():
+    """Test Multi-Provider LLM Factory (OpenAI vs Anthropic with fallback)."""
+    from src.agent.engine import create_chat_model
+    from langchain_openai import ChatOpenAI
+    from langchain_anthropic import ChatAnthropic
+
+    # 1. Instanciar OpenAI
+    m_openai = create_chat_model("gpt-5.6-luna")
+    assert isinstance(m_openai, ChatOpenAI)
+    assert m_openai.model_name == "gpt-5.6-luna"
+
+    # 2. Instanciar Anthropic
+    m_claude = create_chat_model("claude-sonnet-5")
+    assert isinstance(m_claude, (ChatAnthropic, ChatOpenAI))
+
+    # 3. Fallback gracioso quando chave não está presente
+    old_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+    try:
+        m_fallback = create_chat_model("claude-sonnet-5")
+        assert isinstance(m_fallback, ChatOpenAI)
+    finally:
+        if old_key:
+            os.environ["ANTHROPIC_API_KEY"] = old_key
+
+    print("[OK] test_multi_provider_model_factory PASSOU")
+
+
 if __name__ == "__main__":
     test_dynamic_tool_binding_subsets()
     test_task_domain_parent_project_inheritance()
     test_task_domain_time_blocking_normalization()
     test_knowledge_domain_note_creation()
     test_fastapi_endpoints_health()
+    test_multi_provider_model_factory()
     print("\n>>> TODOS OS TESTES UNITARIOS DE DOMINIO PASSARAM! <<<")

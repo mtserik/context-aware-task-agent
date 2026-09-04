@@ -7,9 +7,16 @@ from typing import List, Dict, Any, Optional
 
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage, BaseMessage
 from dotenv import load_dotenv
+
+try:
+    from langchain_anthropic import ChatAnthropic
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _ANTHROPIC_AVAILABLE = False
 
 from src.agent.state import AgentState, IntentDomain
 from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE
@@ -121,6 +128,44 @@ def _resolve_temporal_context() -> Dict[str, str]:
     }
 
 
+def create_chat_model(
+    model_name: str,
+    temperature: float = 0,
+    max_tokens: int = 2048,
+) -> BaseChatModel:
+    """
+    Factory polimórfica para instanciação dinâmica de modelos de linguagem (LLMs).
+    Suporta arquitetura híbrida multi-provedores (OpenAI, Anthropic Claude) seguindo o Open/Closed Principle (OCP).
+    Em caso de chave ausente da Anthropic, realiza fallback gracioso para OpenAI.
+    """
+    model_name_clean = model_name.strip()
+
+    # 1. Provedor Anthropic Claude
+    if model_name_clean.lower().startswith("claude"):
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if _ANTHROPIC_AVAILABLE and anthropic_api_key:
+            logger.info("Inicializando ChatAnthropic com o modelo: %s", model_name_clean)
+            return ChatAnthropic(
+                model=model_name_clean,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                api_key=anthropic_api_key,
+            )
+        else:
+            fallback_model = os.getenv("MAEVE_SMART_FALLBACK_MODEL", "gpt-4o")
+            logger.warning(
+                "Modelo Anthropic '%s' configurado, mas ANTHROPIC_API_KEY não foi encontrada "
+                "ou biblioteca indisponível. Realizando fallback gracioso para OpenAI (%s).",
+                model_name_clean,
+                fallback_model,
+            )
+            return ChatOpenAI(model=fallback_model, temperature=temperature, max_tokens=max_tokens)
+
+    # 2. Provedor OpenAI (GPT-5.6 Luna/Terra/Sol, GPT-4o, etc.)
+    logger.info("Inicializando ChatOpenAI com o modelo: %s", model_name_clean)
+    return ChatOpenAI(model=model_name_clean, temperature=temperature, max_tokens=max_tokens)
+
+
 class MaeveAgent:
     """
     Orquestrador Central da Maeve (LangGraph StateGraph).
@@ -130,10 +175,10 @@ class MaeveAgent:
         fast_model_name = os.getenv("MAEVE_FAST_MODEL", "gpt-4o-mini")
         smart_model_name = os.getenv("MAEVE_SMART_MODEL", "gpt-4o")
 
-        # Modelos base não acoplados a ferramentas estáticas
-        self.fast_model_base = ChatOpenAI(model=fast_model_name, temperature=0, max_tokens=2048)
-        self.smart_model_base = ChatOpenAI(model=smart_model_name, temperature=0, max_tokens=4096)
-        self.router_model = ChatOpenAI(model=fast_model_name, temperature=0, max_tokens=256)
+        # Modelos base multi-provedor (OpenAI / Anthropic)
+        self.fast_model_base = create_chat_model(fast_model_name, temperature=0, max_tokens=2048)
+        self.smart_model_base = create_chat_model(smart_model_name, temperature=0, max_tokens=4096)
+        self.router_model = create_chat_model(fast_model_name, temperature=0, max_tokens=256)
 
         # Cache de modelos estáticos legados para compatibilidade
         self.fast_model = self.fast_model_base.bind_tools(ALL_TOOLS)
