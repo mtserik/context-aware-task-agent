@@ -155,7 +155,8 @@ context-aware-task-agent/
     │   ├── tasks.py       # TaskDomainService (TickTick pure domain rules)
     │   ├── knowledge.py   # KnowledgeDomainService (Obsidian pure domain rules)
     │   ├── reminders.py   # ReminderDomainService (Domain scheduling rules)
-    │   └── search.py      # SearchDomainService (Web search & research domain)
+    │   ├── search.py      # SearchDomainService (Web search & research domain)
+    │   └── temporal.py    # TemporalDomainService (Strict timezone & relative date resolution)
     ├── agent/
     │   ├── engine.py      # MaeveAgent: LangGraph StateGraph & Dynamic Tool Routing
     │   ├── prompts.py     # System prompt templates & persona definition
@@ -207,6 +208,7 @@ context-aware-task-agent/
 | A5 | 🟡 Medium | `state.py` | **`current_intent` field unused.** Defined in `AgentState`. | ✅ **Resolvido (Sprint 7).** `IntentDomain` tipado estritamente e `current_intent` ativamente preenchido pelo router para orquestrar a injeção dinâmica de ferramentas. |
 | A6 | 🟢 Low | `notion.py` | **Dead code.** Notion migration artifact. | ✅ **Resolvido.** Arquivo e dependências removidos. |
 | A7 | 🟢 Low | `chat.py` | **Superseded by `cli.py`.** Legacy sync chat client. | ✅ **Resolvido.** Arquivo removido via Git. |
+| A8 | 🔴 High | `prompts.py`, `engine.py` | **Monolithic Static Persona & Prompt Bloat.** Prompt estático monolítico para todos os modelos, sobrecarregando modelos rápidos de execução e subaproveitando a capacidade cognitiva de modelos de fronteira. | ✅ **Resolvido (Sprint 10).** Arquitetura de Persona Dinâmica Assimétrica: `FAST_PROMPT_TEMPLATE` condicionado com 3 few-shots de referência (dev peer brasileira) para GPT-5.6 Luna e `SMART_PROMPT_TEMPLATE` ancorado em 4 Pilares Comportamentais (Curva Circadiana, Anti-Sycophancy/Devil's Advocate, Continuidade Episódica e Curadoria Ativa de Segundo Cérebro) para Claude Sonnet, resolvidos dinamicamente por `get_system_prompt(tier=...)`. |
 
 ### 5.2 Security & Reliability Issues
 
@@ -244,6 +246,9 @@ context-aware-task-agent/
 | B7 | 🟡 Medium | `engine.py` | **Router creates new `ChatOpenAI` instance every turn.** | ✅ **Resolvido.** Reutilização da instância singleton de `router_model`. |
 | B8 | 🟡 Medium | `engine.py` | **RAG context truncated to 200 chars.** | ✅ **Resolvido.** Contexto expandido para 1000 chars por documento relevante. |
 | B9 | 🟢 Low | `engine.py` | **Date filter uses string `in` operator.** | ✅ **Resolvido.** Normalização de datas e comparadores ISO robustos. |
+| B10 | 🔴 Critical | `domain/temporal.py`, `database.py` | **Railway UTC time shift (+3h) & Relative Date Distortion.** Em contêineres Linux/Railway, timestamps e saudações usavam UTC, atrasando/adiantando a percepção de tempo em 3h e desorientando a IA em relação ao dia civil e horário do Erik. | ✅ **Resolvido.** Criado módulo centralizado `src/domain/temporal.py` com `ZoneInfo("America/Sao_Paulo")`, resolução temporal estrita (`resolve_temporal_context`), conversão garantida de UTC para local em reminders do Postgres e inclusão de `tzdata==2026.2`. |
+| B11 | 🔴 Critical | `engine.py` | **OpenAI Reasoning Effort 400 with Function Tools.** Erro 400 ao invocar `gpt-5.6-luna` com ferramentas no endpoint `/v1/chat/completions`: `Function tools with reasoning_effort are not supported...`. | ✅ **Resolvido.** Injeção automática de `reasoning_effort="none"` para modelos de raciocínio no endpoint de chat e mecanismo de fallback adaptativo em tempo de execução no `MaeveEngine`. |
+| B12 | 🔴 Critical | `engine.py` | **Anthropic `temperature` Deprecation 400 Error.** A API da Anthropic depreciou formalmente `temperature` na rota `/v1/messages` para novos modelos (Claude Sonnet 5, etc.), rejeitando com erro 400 qualquer requisição com `temperature=0`. | ✅ **Resolvido.** Configurado `temperature=None` na factory `create_chat_model` para o SDK omitir o parâmetro do payload HTTP, acrescido de recuperação adaptativa caso qualquer restrição residual de amostragem ocorra. |
 
 ### 5.5 Testing & Observability Gaps
 
@@ -272,14 +277,14 @@ context-aware-task-agent/
 *   **[✅] Deploy Cloud:** Infraestrutura pronta para Railway/Render com segurança via API Key e SSH dinâmico.
 
 ### Fase 3: Inteligência Avançada & Otimização (Concluída ✅)
-*   **[✅] Roteamento de Modelos & Multi-Provider:** Arquitetura Híbrida com Factory polimórfica (`create_chat_model` em `engine.py`). Roteamento dinâmico combinando OpenAI (GPT-5.6 Luna como modelo Fast/Router) e Anthropic (Claude Sonnet como modelo Smart/Deep Reasoning para Obsidian e RAG), com fallback gracioso e zero acoplamento.
+*   **[✅] Roteamento de Modelos & Multi-Provider:** Arquitetura Híbrida com Factory polimórfica (`create_chat_model` em `engine.py`). Roteamento dinâmico combinando OpenAI (GPT-5.6 Luna como modelo Fast/Router com `reasoning_effort="none"` para tools) e Anthropic (Claude Sonnet como modelo Smart/Deep Reasoning para Obsidian e RAG com `temperature=None`), com fallback gracioso e zero acoplamento.
 *   **[✅] Infraestrutura Obsidian (Cloud):** Railway Volumes para manter o Vault clonado permanentemente. Estratégia de `git init` para compatibilidade com volumes.
-*   **[✅] Consciência Temporal:** Injeção dinâmica de data, hora, dia da semana e período do dia para saudações e priorização contextual.
+*   **[✅] Consciência Temporal Estrita:** Módulo dedicado `src/domain/temporal.py` com fuso horário oficial de Brasília (`America/Sao_Paulo`, UTC-3), eliminando distorções de timezone em contêineres Railway/Linux e normalizando agendamento de tarefas e lembretes.
 *   **[✅] Refactoring Estrutural:** Clean Hexagonal Architecture implementada. Camada de Domínio Pura (`src/domain/`), Adaptadores Inbound (`src/agent/tools/`), REST modular (`src/api/routes/`), e eliminação do God Module (`engine.py`).
-*   **[🚀] Naturalidade & Personalidade (Próxima Fase):**
-    *   **Memória de Humor:** Detecção de sentimento nas últimas mensagens para ajuste automático de tom (Empatia Contextual).
-    *   **Proatividade de Follow-up:** Perguntas inteligentes sobre eventos passados no dia do Erik.
-    *   **Variação de Energia:** Tom mais técnico em horário comercial e mais reflexivo/relaxado à noite.
+*   **[✅] Naturalidade & Persona Dinâmica Assimétrica:**
+    *   **Tier Fast (GPT-5.6 Luna):** Condicionado com 3 Few-Shot Examples (criação de task com time-blocking, consulta de backlog, suporte técnico Python), respostas ágeis de 2 a 5 linhas, gírias dev brasileiras autênticas.
+    *   **Tier Smart (Claude Sonnet):** Ancorado nos 4 Pilares Comportamentais (Curva Circadiana de Energia [madrugada, manhã, tarde, noite], Anti-Sycophancy & Devil's Advocate de Staff Engineer contra sobreengenharia, Continuidade Episódica/Amizade Real e Curadoria Ativa do Segundo Cérebro no Obsidian via método CODE).
+    *   **Despacho Dinâmico:** Função `get_system_prompt(tier=...)` acoplada ao router do LangGraph.
 *   **[ ] Visão Computacional:** Processamento de imagens e fotos via Telegram para extração de insights no Obsidian.
 *   **[ ] Dashboard Web:** Interface administrativa para monitorar sincronização e logs do agente.
 
@@ -503,3 +508,44 @@ When initializing a new session or entering Agent Mode inside this repository, y
 3. Read Section 7 (Quick Wins) to know what refactoring is needed first.
 
 Greet Erik, acknowledge the current structural status of the project, and guide him based on where we are in the roadmap. The immediate priority is **Fase 4: MCP Server** with the prerequisite refactoring from Section 7.1.
+
+---
+
+## 9. Histórico de Sprints & Entregas Recentes (Sprint Ledger)
+
+### 9.1 Sprint 10: Modelos de Fronteira, Fuso Horário de Brasília & Persona Assimétrica (2026-09-04)
+
+> **Objetivo:** Atualizar os modelos neurais da Maeve para máxima relação custo-benefício, estabilizar o fuso horário no Railway, resolver incompatibilidades de runtime dos novos modelos (OpenAI & Anthropic) e implementar a arquitetura de Persona Dinâmica Assimétrica.
+
+#### 1. Pesquisa & Benchmarking de Modelos
+- **Fast / Router Model:** Adoção do **GPT-5.6 Luna** da OpenAI (substituindo GPT-4o-mini). Oferece latência de resposta inferior a 600ms, raciocínio nativo para classificação de intenções e custo de apenas ~$0,15 / $0,60 por milhão de tokens, gerando custo mensal estimado < $1,00 para o volume da Maeve.
+- **Smart / Deep Reasoning Model:** Adoção do **Claude Sonnet** da Anthropic (substituindo GPT-4o). Oferece qualidade superior de raciocínio para sínteses do Segundo Cérebro (Obsidian), decomposição de tarefas complexas e anti-sycophancy.
+- **Análise de Custos Railway:** Avaliado e aprovado o plano de $5/mês do Railway, garantindo uptime 24/7 do container sem risco de esgotamento prematuro de créditos.
+
+#### 2. Consciência Temporal Estrita (Fuso Horário de Brasília)
+- **Problema:** Em produção no Railway (ambiente Linux baseado em UTC), a Maeve calculava horários com desvio de +3h e se perdia em termos relativos ("hoje", "amanhã", "às 15h").
+- **Solução Técnica:**
+  - Criação do módulo de domínio `src/domain/temporal.py` utilizando `zoneinfo.ZoneInfo("America/Sao_Paulo")`.
+  - Funções de domínio puro: `get_local_now()`, `resolve_temporal_context()` e `to_local_datetime()`.
+  - Normalização no serviço de banco de dados (`src/services/database.py`) para converter timestamps UTC do PostgreSQL para horário local de Brasília ao carregar lembretes.
+  - Pinagem da dependência `tzdata==2026.2` no `requirements.txt`.
+
+#### 3. Estabilização de Runtime de Provedores (Bugfixes B11 & B12)
+- **OpenAI Reasoning Effort com Function Calling (B11):** No endpoint `/v1/chat/completions`, os novos modelos da OpenAI (GPT-5.x, Luna, Terra, Sol) exigem explicitamente `reasoning_effort="none"` quando ferramentas/tools estão ativas. Implementada configuração automática na factory `create_chat_model` e fallback adaptativo em tempo de execução no `MaeveEngine`.
+- **Anthropic Temperature Deprecation (B12):** Modelos Claude recentes (Sonnet 5) depreciaram o parâmetro de amostragem `temperature` na rota `/v1/messages`. Qualquer valor enviado (inclusive `0.0`) gerava erro 400. Configurado `temperature=None` na factory `create_chat_model` para suprimir a chave do payload JSON, garantindo conformidade total com a API.
+
+#### 4. Arquitetura de Persona Dinâmica Assimétrica
+- **Motivação:** Um prompt monolítico degradava modelos rápidos de execução (gerando respostas prolixas ou alucinações de tom) e subaproveitava o potencial analítico de modelos de fronteira.
+- **Implementação:**
+  - `FAST_PROMPT_TEMPLATE` (Luna): Condicionamento por Few-Shot Learning (3 exemplos reais: agendamento com time-blocking, backlog diário, suporte técnico direto), respostas ultraconcisas (2 a 5 linhas), gírias dev brasileiras autênticas.
+  - `SMART_PROMPT_TEMPLATE` (Sonnet): Ancorado em 4 Pilares Comportamentais:
+    1. *Ritmo Circadiano Dinâmico:* Tom e energia modulados pela hora do dia (madrugada cúmplice e enxuta, manhã estratégica e Big Rock, tarde de foco/tração, noite de wrap-up e anti-burnout).
+    2. *Anti-Sycophancy & Devil's Advocate:* Postura de Staff Engineer questionando sobreengenharia (overengineering), gambiarras perigosas e backlogs irreais.
+    3. *Continuidade Episódica & Amizade Real:* Comemoração de marcos reais e empatia contextual sob estresse agudo.
+    4. *Curadoria Ativa do Segundo Cérebro:* Método CODE no Obsidian com captura de insights e conexão semântica.
+  - Função despachante `get_system_prompt(tier=...)` em `src/agent/prompts.py` integrada ao loop de inferência do LangGraph.
+  - Mandato estrito de formatação para Telegram: proibição de hashtags `#` e `##`, uso exclusivo de negrito em linha isolada para títulos.
+
+#### 5. Qualidade, Testes & CI/CD
+- 100% de aprovação na suíte de testes unitários e de regressão (`test_domain_services.py` e `test_bugfixes_regression.py`).
+- Commits `b9ac39f`, `a3e56fb` e `61b7c03` integrados na branch `main` e deployados com sucesso no Railway.
