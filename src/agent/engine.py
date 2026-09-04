@@ -157,20 +157,29 @@ def extract_text_from_message(data: Any) -> str:
     if not data:
         return ""
     if isinstance(data, str):
-        return data
+        # Remove eventuais blocos de pensamento interno <think>...</think> caso presentes
+        clean_text = re.sub(r"<think>.*?</think>", "", data, flags=re.DOTALL)
+        return clean_text
     if isinstance(data, list):
         parts = []
         for item in data:
             if isinstance(item, str):
-                parts.append(item)
+                parts.append(extract_text_from_message(item))
             elif isinstance(item, dict):
+                # Ignora explicitamente blocos de pensamento interno (Anthropic extended thinking / reasoning)
+                if item.get("type") in ["thinking", "reasoning"]:
+                    continue
                 if item.get("type") == "text":
-                    parts.append(item.get("text", ""))
+                    parts.append(extract_text_from_message(item.get("text", "")))
                 elif "content" in item:
                     parts.append(extract_text_from_message(item["content"]))
             elif hasattr(item, "text"):
+                if getattr(item, "type", "") in ["thinking", "reasoning"]:
+                    continue
                 parts.append(str(item.text))
             elif hasattr(item, "content"):
+                if getattr(item, "type", "") in ["thinking", "reasoning"]:
+                    continue
                 parts.append(extract_text_from_message(item.content))
         return "".join(parts)
     if hasattr(data, "generations") and data.generations:
@@ -330,15 +339,17 @@ class MaeveAgent:
 
         if is_confirmation and last_ai_msg:
             # Assistente acabou de propor criar nota ou documentar no Obsidian
+            # O raciocínio conceitual já foi concebido pela Maeve no turno anterior.
+            # A escrita da nota é puramente operacional -> FAST (Luna, 20x mais barato)
             if any(k in ai_text for k in ["obsidian", "vault", "segundo cérebro", "second brain", "nota", "salvar esse", "salvar isso", "documentar"]):
-                logger.info("[Router Contextual]: Confirmação para ação de Obsidian detectada -> KNOWLEDGE / SMART")
+                logger.info("[Router Contextual]: Confirmação para ação de Obsidian detectada -> KNOWLEDGE / FAST (Luna)")
                 return {
                     "current_intent": "knowledge",
                     "routing_metadata": {
-                        "complexity": 2,
-                        "model": "smart",
+                        "complexity": 1,
+                        "model": "fast",
                         "domain": "knowledge",
-                        "reason": "Confirmação contextual do usuário para criar/atualizar nota no Obsidian"
+                        "reason": "Escrita operacional de nota no Obsidian a partir de contexto prévio (Luna)"
                     }
                 }
             # Assistente acabou de propor criar/atualizar tarefa no TickTick
@@ -406,9 +417,9 @@ class MaeveAgent:
         - chat: Conversas reflexivas, saudações, bate-papo sem necessidade de ferramentas.
         - general: Pedidos híbridos que misturam múltiplos domínios ou continuam ações anteriores.
 
-        Complexidade:
-        1-2 (fast): Comandos diretos, criação simples, saudações, listagens.
-        3-5 (smart): Planejamento, múltiplos passos, raciocínio profundo, consolidação.
+        Diretrizes de Complexidade & Escolha de Modelo:
+        - 1-2 (fast / Luna): Comandos diretos, escrita e criação operacional de notas no Obsidian (salvar ideias, notas rápidas, mover arquivos), gerenciamento de tarefas no TickTick, lembretes, saudações e listagens.
+        - 3-5 (smart / Sonnet): Raciocínio conceitual profundo, debates teóricos de arquitetura/engenharia/ciência de dados, planejamento estratégico denso, análises estatísticas complexas e consolidação de múltiplos conceitos novos.
 {recent_context}
         Pedido Atual do Usuário:
         "{last_msg.content}"

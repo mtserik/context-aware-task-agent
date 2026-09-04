@@ -327,8 +327,12 @@ class TelegramService:
                 if "router_llm" in tags:
                     continue
                 
-                # Detecta se uma ferramenta de pesquisa foi chamada
+                # Detecta se uma ferramenta foi chamada
                 if kind == "on_tool_start":
+                    # Qualquer texto emitido antes da execução da ferramenta era apenas
+                    # narração intermediária de bastidores. Limpa o buffer para reter apenas
+                    # a resposta humana final conclusiva pós-execução.
+                    final_response = ""
                     tool_name = event.get("name", "")
                     if tool_name in ["web_search", "deep_research"] and not status_msg:
                         icon = "🌐" if tool_name == "web_search" else "🧠"
@@ -341,12 +345,25 @@ class TelegramService:
                     if delta:
                         final_response += delta
                 
-                # Fallback caso o stream não tenha preenchido (ex: modelos sem streaming por chunk)
+                # Trata finalização do modelo
                 elif kind == "on_chat_model_end":
-                    if not final_response:
-                        output = event.get("data", {}).get("output")
+                    output = event.get("data", {}).get("output")
+                    # Verifica se o modelo acionou ferramentas neste turno
+                    has_tool_calls = False
+                    if hasattr(output, "generations") and output.generations:
+                        gen_msg = getattr(output.generations[0], "message", None)
+                        if gen_msg and getattr(gen_msg, "tool_calls", None):
+                            has_tool_calls = True
+                    elif getattr(output, "tool_calls", None):
+                        has_tool_calls = True
+
+                    if has_tool_calls:
+                        # Se chamou ferramentas, descarta qualquer texto que o modelo tenha emitido
+                        # neste passo (narração de intenção), mantendo silêncio operacional nos bastidores.
+                        final_response = ""
+                    else:
                         extracted = extract_text_from_message(output)
-                        if extracted:
+                        if extracted and not final_response:
                             final_response = extracted
 
                 # Fallback no encerramento da cadeia (call_model ou LangGraph)

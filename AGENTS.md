@@ -260,6 +260,7 @@ context-aware-task-agent/
 | B20 | 🔴 Critical | `services/database.py` | **`DuplicatePreparedStatement` on Supabase PgBouncer (Port 6543).** Com `prepare_threshold=0`, o `psycopg 3` forçava a preparação imediata de statements com nomes estáticos (`"_pg3_0"`). Como o pooler do Supabase opera em transaction mode, o pooler reutilizava conexões onde o statement já existia, estourando `DuplicatePreparedStatement: prepared statement "_pg3_0" already exists` e forçando fallback para memória volátil. | ✅ **Resolvido.** Configurado `prepare_threshold=None` nas `kwargs` do `AsyncConnectionPool`, desativando prepared statements nomeados no pooler e garantindo persistência ininterrupta. |
 | B21 | 🔴 Critical | `agent/engine.py` | **Multi-turn Context Loss on Short Confirmations (Fast-Path Trap).** A heurística de roteamento `len(text_clean) <= 20` forçava qualquer resposta afirmativa curta (`"sim"`, `"pode criar"`, `"faz isso"`, `"ok"`) para `domain: "chat"` com `active_tools = []`. Quando a Maeve propunha salvar um insight no Obsidian e o usuário confirmava, ela era desarmada das ferramentas do Vault e afirmava não ter acesso às notas. | ✅ **Resolvido.** Removida a trava de comprimento cego; implementada Heurística Contextual de Confirmação que inspeciona a mensagem anterior da Maeve para herdar o domínio correto (`knowledge`, `tasks`, `reminders`) com as ferramentas correspondentes, e enriquecido o prompt do router com `recent_context`. |
 | B22 | 🟡 High | `agent/prompts.py`, `agent/engine.py` | **Excessive Anthropic Token Consumption on Sonnet 5.** A cada turno no Telegram, o prompt completo (>1.700 tokens de persona + ferramentas + histórico) era reenviado sem cache, gerando alto custo operacional no Claude Sonnet 5. | ✅ **Resolvido.** Implementado **Anthropic Prompt Caching** com `cache_control: {"type": "ephemeral"}` particionando o system prompt em estático e dinâmico (`get_system_prompt_parts`), cacheando o schema de ferramentas e a penúltima mensagem do histórico (`_apply_anthropic_history_cache`), gerando ~90% de economia em tokens cacheados. |
+| B23 | 🟡 High | `services/telegram_bot.py`, `agent/prompts.py`, `agent/engine.py` | **Intermediate Chain-of-Thought & Pre-Tool Monologue Leakage on Telegram.** Durante o loop ReAct, o modelo emitia textos narrativos intermediários antes de chamar ferramentas (*"Vou consultar seu vault..."*, *"Pensando nos requisitos..."*). O streaming no Telegram acumulava esses fragmentos sem descartar os passos pré-ferramenta, expondo o monólogo interno da IA e inflando drasticamente os tokens de saída ($15/MTok). | ✅ **Resolvido.** Estabelecido protocolo de **Silêncio Operacional** nos prompts; implementado descarte automático de textos pré-ferramentas no `telegram_bot.py` (`final_response = ""` ao disparar `on_tool_start` ou finalizar chamada com `tool_calls`); filtragem de tags `<think>` e blocos `thinking/reasoning`; e redirecionamento de escritas operacionais de notas para o Luna (`gpt-5.6-luna`), economizando 95% nos tokens dessas ações. |
 
 ### 5.5 Testing & Observability Gaps
 
@@ -689,4 +690,33 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
 - Suíte completa de testes de domínio (`test_domain_services.py`): 12/12 aprovados.
 - Suíte completa de testes de regressão (`test_bugfixes_regression.py`): 13/13 aprovados.
 - Suíte completa de autenticação MCP (`test_mcp_auth.py`): 11/11 aprovados.
-- Testes diagnósticos de confirmação multi-turn (`test_multiturn.py`): 8 variações afirmativas confirmadas roteando para `knowledge` com `create_obsidian_note` ativo.
+- Testes diagnósticos de confirmação multi-turn (`test_multiturn.py`): 8 variações afirmativas confirmadas roteando para `knowledge` com `create_obsidian_note` ativo.
+
+---
+
+### 9.5 Sprint 15: Silêncio Operacional no Telegram & Escrita de Notas no Luna (2026-09-04)
+
+> **Objetivo:** Eliminar o vazamento de monólogos internos, pensamentos pré-ferramentas e textos narrativos no Telegram, estabelecendo postura humana direta e concisa, e rotear a escrita física de notas no Obsidian para o Luna (`gpt-5.6-luna`), economizando 95% nos tokens operacionais de notas.
+
+#### 1. Diagnóstico do Vazamento de Pensamento & Prolixidade
+- **Vazamento no Streaming (`telegram_bot.py`):** Durante o loop ReAct, o nó `call_model` emitia tokens intermediários narrando o que ia fazer (*"Vou consultar o vault...", "Pensando na estrutura..."*) antes de chamar a tool. O `telegram_bot.py` acumulava todo o stream via `final_response += delta`, concatenando o monólogo interno pré-ferramenta com a resposta final.
+- **Instruções Prolixas nos Prompts:** O prompt anterior orientava a "quebrar o fluxo de pensamento em etapas lógicas", incentivando o modelo a verbalizar cada raciocínio analítico ao invés de mantê-lo interno.
+- **Custo Desproporcional de Notas no Sonnet:** Confirmações como *"pode criar"* eram roteadas para o Sonnet (`claude-sonnet-5`, $3/M in, $15/M out), quando o raciocínio já havia sido concluído e a formatação Markdown podia ser executada perfeitamente pelo Luna (`gpt-5.6-luna`, $0.15/M in, $0.60/M out — 25x mais barato).
+
+#### 2. Implementação das Correções
+- **Silêncio Operacional nos Prompts (`prompts.py`):**
+  - Adicionada regra estrita de **Silêncio Operacional Absoluto**: ferramentas devem ser invocadas sem emitir nenhum texto prévio.
+  - Adicionada diretriz de **Concisão & Postura Humana Sênior**: o modelo deve pensar profundamente nos bastidores, mas entregar apenas a resposta mastigada, humana e conclusiva em 1 a 3 parágrafos diretos.
+- **Descarte de Monólogos no Telegram (`telegram_bot.py`):**
+  - Ao disparar `on_tool_start`, o buffer `final_response` é resetado (`""`), descartando qualquer texto intermediário gerado antes da ferramenta.
+  - Ao finalizar o nó (`on_chat_model_end`), se `tool_calls` estiverem presentes, `final_response` é resetado para reter exclusivamente a resposta final pós-execução.
+  - Filtragem explícita de tags `<think>` e blocos de `thinking/reasoning` em `extract_text_from_message` (`engine.py`).
+- **Escrita Operacional de Notas no Luna (`engine.py`):**
+  - Confirmações de notas no Obsidian (`"sim"`, `"pode criar"`, `"faz isso"`) agora roteiam para `model: "fast"` (`gpt-5.6-luna`) mantendo `current_intent: "knowledge"` com `create_obsidian_note` ativo.
+  - Refinadas as diretrizes de complexidade no prompt do router LLM para orientar escrita mecânica/operacional para o Luna e raciocínio teórico/arquitetural denso para o Sonnet.
+
+#### 3. Verificação & Qualidade
+- Suíte completa de testes de domínio (`test_domain_services.py`): 12/12 aprovados.
+- Suíte completa de testes de regressão (`test_bugfixes_regression.py`): 13/13 aprovados.
+- Suíte de autenticação MCP (`test_mcp_auth.py`): 11/11 aprovados.
+- Teste diagnóstico (`test_note_fast.py`): confirmada escrita de nota roteando para `fast` (Luna) com `create_obsidian_note` vinculado.
