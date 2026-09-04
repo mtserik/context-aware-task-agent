@@ -19,7 +19,7 @@ except ImportError:
     _ANTHROPIC_AVAILABLE = False
 
 from src.agent.state import AgentState, IntentDomain
-from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE
+from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE, get_system_prompt
 from src.services.registry import get_vector_db_service
 from src.domain.tasks import normalize_ticktick_date
 from src.domain.temporal import resolve_temporal_context
@@ -112,7 +112,7 @@ _resolve_temporal_context = resolve_temporal_context
 
 def create_chat_model(
     model_name: str,
-    temperature: float = 0,
+    temperature: Optional[float] = 0,
     max_tokens: int = 2048,
 ) -> BaseChatModel:
     """
@@ -127,9 +127,11 @@ def create_chat_model(
         anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         if _ANTHROPIC_AVAILABLE and anthropic_api_key:
             logger.info("Inicializando ChatAnthropic com o modelo: %s", model_name_clean)
+            # Modelos Claude recentes (Sonnet 5, etc.) depreciaram o parâmetro temperature na API /v1/messages.
+            # Omitimos temperature passando None para evitar o erro 400 'temperature is deprecated for this model'.
             return ChatAnthropic(
                 model=model_name_clean,
-                temperature=temperature,
+                temperature=None,
                 max_tokens=max_tokens,
                 api_key=anthropic_api_key,
             )
@@ -141,7 +143,7 @@ def create_chat_model(
                 model_name_clean,
                 fallback_model,
             )
-            return ChatOpenAI(model=fallback_model, temperature=temperature, max_tokens=max_tokens)
+            return ChatOpenAI(model=fallback_model, temperature=temperature or 0, max_tokens=max_tokens)
 
     # 2. Provedor OpenAI (GPT-5.6 Luna/Terra/Sol, o1, o3, GPT-4o, etc.)
     logger.info("Inicializando ChatOpenAI com o modelo: %s", model_name_clean)
@@ -321,9 +323,11 @@ class MaeveAgent:
             f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs
         ])
 
-        # 5. Compilação de Contexto Temporal e System Prompt
+        # 5. Compilação de Contexto Temporal e System Prompt (Persona Dinâmica Assimétrica)
         temporal = _resolve_temporal_context()
-        system_content = SYSTEM_PROMPT_TEMPLATE.format(
+        active_tier = routing.get("model", "fast")
+        system_content = get_system_prompt(
+            tier=active_tier,
             date=temporal["date"],
             time=temporal["time"],
             day_of_week=temporal["day_of_week"],
@@ -331,7 +335,7 @@ class MaeveAgent:
             timezone=temporal.get("timezone", "America/Sao_Paulo"),
             user_id=user_id,
             chat_id=chat_id,
-            obsidian_context=context_str
+            obsidian_context=context_str,
         )
 
         # 6. Invocação com Fallback Resiliente
@@ -355,6 +359,17 @@ class MaeveAgent:
                         return {"messages": [await retry_llm.ainvoke(prompt_messages)]}
                 except Exception as retry_err:
                     logger.warning("Falha na recuperação de reasoning_effort: %s", retry_err)
+
+            # Recuperação adaptativa caso o provedor (ex: Anthropic) rejeite temperature
+            if "temperature" in err_msg.lower():
+                logger.info("Detectada restrição de temperature no modelo. Reconfigurando com temperature=None...")
+                try:
+                    if hasattr(base_model, "model_copy"):
+                        retry_base = base_model.model_copy(update={"temperature": None})
+                        retry_llm = retry_base.bind_tools(active_tools) if active_tools else retry_base
+                        return {"messages": [await retry_llm.ainvoke(prompt_messages)]}
+                except Exception as retry_err:
+                    logger.warning("Falha na recuperação de temperature: %s", retry_err)
 
             if "400" in err_msg:
                 last_human = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)

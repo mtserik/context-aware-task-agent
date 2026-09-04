@@ -106,6 +106,9 @@ def test_multi_provider_model_factory():
     # 2. Instanciar Anthropic
     m_claude = create_chat_model("claude-sonnet-5")
     assert isinstance(m_claude, (ChatAnthropic, ChatOpenAI))
+    if isinstance(m_claude, ChatAnthropic):
+        # Valida que temperature é estritamente None para evitar o erro 400 da Anthropic
+        assert m_claude.temperature is None
 
     # 3. Fallback gracioso quando chave não está presente
     old_key = os.environ.pop("ANTHROPIC_API_KEY", None)
@@ -150,6 +153,51 @@ def test_temporal_context_and_timezone_handling():
     print("[OK] test_temporal_context_and_timezone_handling PASSOU")
 
 
+def test_asymmetric_persona_prompt_system():
+    """Valida a geração de prompts assimétricos dinâmicos por tier (Fast vs Smart)."""
+    from src.agent.prompts import (
+        get_system_prompt,
+        FAST_PROMPT_TEMPLATE,
+        SMART_PROMPT_TEMPLATE,
+        SYSTEM_PROMPT_TEMPLATE,
+    )
+
+    context_kwargs = {
+        "date": "2026-09-04",
+        "time": "01:45",
+        "day_of_week": "Sexta-feira",
+        "period": "madrugada",
+        "timezone": "America/Sao_Paulo",
+        "user_id": "123456",
+        "chat_id": "987654",
+        "obsidian_context": "- Arquitetura: Clean Architecture e POO.",
+    }
+
+    # 1. Tier Fast (Luna)
+    fast_prompt = get_system_prompt("fast", **context_kwargs)
+    assert "FEW-SHOT EXAMPLES" in fast_prompt
+    assert "Ultra-Direta e Concisa" in fast_prompt
+    assert "NUNCA use hashtags para títulos" in fast_prompt
+    assert "2026-09-04" in fast_prompt
+    assert "01:45" in fast_prompt
+    assert "OS 4 PILARES COMPORTAMENTAIS" not in fast_prompt
+
+    # 2. Tier Smart (Sonnet)
+    smart_prompt = get_system_prompt("smart", **context_kwargs)
+    assert "OS 4 PILARES COMPORTAMENTAIS" in smart_prompt
+    assert "RITMO CIRCADIANO DINÂMICO" in smart_prompt
+    assert "ANTI-SYCOPHANCY & DEVIL'S ADVOCATE" in smart_prompt
+    assert "CONTINUIDADE EPISÓDICA" in smart_prompt
+    assert "CURADORIA ATIVA DO SEGUNDO CÉREBRO" in smart_prompt
+    assert "NUNCA use hashtags para títulos" in smart_prompt
+    assert "2026-09-04" in smart_prompt
+
+    # 3. Compatibilidade legada
+    assert SYSTEM_PROMPT_TEMPLATE == SMART_PROMPT_TEMPLATE
+
+    print("[OK] test_asymmetric_persona_prompt_system PASSOU")
+
+
 if __name__ == "__main__":
     test_dynamic_tool_binding_subsets()
     test_task_domain_parent_project_inheritance()
@@ -158,4 +206,5 @@ if __name__ == "__main__":
     test_fastapi_endpoints_health()
     test_multi_provider_model_factory()
     test_temporal_context_and_timezone_handling()
+    test_asymmetric_persona_prompt_system()
     print("\n>>> TODOS OS TESTES UNITARIOS DE DOMINIO PASSARAM! <<<")
