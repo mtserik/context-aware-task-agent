@@ -143,9 +143,25 @@ def create_chat_model(
             )
             return ChatOpenAI(model=fallback_model, temperature=temperature, max_tokens=max_tokens)
 
-    # 2. Provedor OpenAI (GPT-5.6 Luna/Terra/Sol, GPT-4o, etc.)
+    # 2. Provedor OpenAI (GPT-5.6 Luna/Terra/Sol, o1, o3, GPT-4o, etc.)
     logger.info("Inicializando ChatOpenAI com o modelo: %s", model_name_clean)
-    return ChatOpenAI(model=model_name_clean, temperature=temperature, max_tokens=max_tokens)
+    openai_kwargs: Dict[str, Any] = {
+        "model": model_name_clean,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+    # Modelos com raciocínio (GPT-5.x, Luna, Terra, Sol, o1, o3):
+    # No endpoint /v1/chat/completions, tools exigem explicitamente reasoning_effort='none'
+    is_reasoning_model = (
+        model_name_clean.lower().startswith(("gpt-5", "o1", "o3"))
+        or any(k in model_name_clean.lower() for k in ["luna", "terra", "sol"])
+        or os.getenv("MAEVE_FORCE_REASONING_EFFORT_NONE", "false").lower() == "true"
+    )
+    if is_reasoning_model:
+        openai_kwargs["reasoning_effort"] = "none"
+
+    return ChatOpenAI(**openai_kwargs)
 
 
 class MaeveAgent:
@@ -326,11 +342,24 @@ class MaeveAgent:
             response = await llm.ainvoke(prompt_messages)
             return {"messages": [response]}
         except Exception as e:
-            print(f"❌ Erro na invocação LLM: {e}")
-            if "400" in str(e):
+            err_msg = str(e)
+            logger.error("❌ Erro na invocação LLM: %s", err_msg)
+
+            # Recuperação adaptativa caso o modelo OpenAI rejeite reasoning_effort com tools
+            if "reasoning_effort" in err_msg:
+                logger.info("Detectada restrição de reasoning_effort com ferramentas. Reconfigurando para reasoning_effort='none'...")
+                try:
+                    if hasattr(base_model, "model_copy"):
+                        retry_base = base_model.model_copy(update={"reasoning_effort": "none"})
+                        retry_llm = retry_base.bind_tools(active_tools) if active_tools else retry_base
+                        return {"messages": [await retry_llm.ainvoke(prompt_messages)]}
+                except Exception as retry_err:
+                    logger.warning("Falha na recuperação de reasoning_effort: %s", retry_err)
+
+            if "400" in err_msg:
                 last_human = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)
                 fallback_history = [last_human] if last_human else []
-                return {"messages": [await llm.ainvoke([SystemMessage(content=system_content)] + fallback_history)]}
+                return {"messages": [await base_model.ainvoke([SystemMessage(content=system_content)] + fallback_history)]}
             raise e
 
     async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):

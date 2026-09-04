@@ -101,6 +101,7 @@ def test_multi_provider_model_factory():
     m_openai = create_chat_model("gpt-5.6-luna")
     assert isinstance(m_openai, ChatOpenAI)
     assert m_openai.model_name == "gpt-5.6-luna"
+    assert m_openai.reasoning_effort == "none"
 
     # 2. Instanciar Anthropic
     m_claude = create_chat_model("claude-sonnet-5")
