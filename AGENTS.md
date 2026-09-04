@@ -36,6 +36,7 @@ This document serves as the master context ledger for **Project Maeve** (working
    - **Filtro de Ruído & Limiares:** Buscas vetoriais ingênuas que sempre retornam os $k$ primeiros vizinhos degradam o raciocínio do modelo ao injetar ruído irrelevante. Utilize limiares de corte de score (*similarity score threshold*) e filtre consultas onde a variância de similaridade não justifique contexto externo.
 2. **Chunking Semântico & Densidade Informacional:**
    - O chunking de conhecimento não deve ser um truncamento cego por caracteres. Deve respeitar fronteiras sintáticas do Markdown (árvore de cabeçalhos H1/H2/H3, blocos de código atômicos, tabelas) mantendo metadados essenciais (caminho relativo, tags, frontmatter).
+   - **Padrão de Escrita no Obsidian:** Toda representação de conhecimento registrada pela Maeve no Obsidian Vault deve obedecer estritamente a Markdown estruturado (`#`, `##`, listas, tabelas) e notação matemática em LaTeX padrão MathJax (`$inline$` e `$$bloco$$`), assegurando máxima legibilidade no Obsidian e fidelidade geométrica aos embeddings do RAG.
 3. **Economia de Tokens, Atenção e Complexidade Algorítmica:**
    - A complexidade do mecanismo de Self-Attention cresce com o tamanho da janela de contexto ($O(N^2)$ a $O(N \log N)$).
    - Injetar dezenas de ferramentas simultâneas no prompt consome tokens a cada turno e induz *Tool Bleed* / confusão de parâmetros. A seleção de ferramentas deve ser determinística e fundamentada em **Intent-Based Dynamic Tool Routing**.
@@ -546,9 +547,9 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
     1. *Ritmo Circadiano Dinâmico:* Tom e energia modulados pela hora do dia (madrugada cúmplice e enxuta, manhã estratégica e Big Rock, tarde de foco/tração, noite de wrap-up e anti-burnout).
     2. *Anti-Sycophancy & Devil's Advocate:* Postura de Staff Engineer questionando sobreengenharia (overengineering), gambiarras perigosas e backlogs irreais.
     3. *Continuidade Episódica & Amizade Real:* Comemoração de marcos reais e empatia contextual sob estresse agudo.
-    4. *Curadoria Ativa do Segundo Cérebro:* Método CODE no Obsidian com captura de insights e conexão semântica.
+    4. *Curadoria Ativa do Segundo Cérebro:* Método CODE no Obsidian com captura de insights, conexão semântica e padrão estrito de formatação: Markdown completo estruturado (`#`, `##`, listas, tabelas) e notação matemática OBRIGATORIAMENTE em LaTeX padrão MathJax (`$inline$` e `$$bloco$$`).
   - Função despachante `get_system_prompt(tier=...)` em `src/agent/prompts.py` integrada ao loop de inferência do LangGraph.
-  - Mandato estrito de formatação para Telegram: proibição de hashtags `#` e `##`, uso exclusivo de negrito em linha isolada para títulos.
+  - Mandato estrito de formatação por canal: proibição de títulos com hashtags `#` no Telegram (usando `*negrito*`), contrapondo com a obrigatoriedade de Markdown estruturado e LaTeX MathJax para escrita de notas no Obsidian Vault.
 
 #### 5. Qualidade, Testes & CI/CD
 - 100% de aprovação na suíte de testes unitários e de regressão (`test_domain_services.py` e `test_bugfixes_regression.py`).

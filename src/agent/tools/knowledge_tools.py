@@ -5,7 +5,7 @@ _knowledge_domain = KnowledgeDomainService()
 
 @tool
 async def create_obsidian_note(title: str, content: str, folder: str = "Inbox"):
-    """Cria uma nova nota no Vault do Obsidian."""
+    """Cria uma nova nota no Vault do Obsidian. O 'content' deve estar em Markdown estruturado completo e qualquer notação matemática DEVE ser formatada estritamente em LaTeX ($inline$ ou $$bloco$$)."""
     result = await _knowledge_domain.create_note(title=title, content=content, folder=folder)
     return result.to_agent_message()
 

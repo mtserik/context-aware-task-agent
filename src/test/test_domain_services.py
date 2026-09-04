@@ -181,6 +181,8 @@ def test_asymmetric_persona_prompt_system():
     assert "2026-09-04" in fast_prompt
     assert "01:45" in fast_prompt
     assert "OS 4 PILARES COMPORTAMENTAIS" not in fast_prompt
+    assert "LaTeX" in fast_prompt
+    assert "Obsidian" in fast_prompt
 
     # 2. Tier Smart (Sonnet)
     smart_prompt = get_system_prompt("smart", **context_kwargs)
@@ -191,6 +193,9 @@ def test_asymmetric_persona_prompt_system():
     assert "CURADORIA ATIVA DO SEGUNDO CÉREBRO" in smart_prompt
     assert "NUNCA use hashtags para títulos" in smart_prompt
     assert "2026-09-04" in smart_prompt
+    assert "LaTeX" in smart_prompt
+    assert "MathJax" in smart_prompt
+    assert "Markdown estruturado" in smart_prompt
 
     # 3. Compatibilidade legada
     assert SYSTEM_PROMPT_TEMPLATE == SMART_PROMPT_TEMPLATE
