@@ -1,4 +1,4 @@
-﻿"""
+"""
 Suite de Testes Automatizados para a Camada de Segurança do Servidor MCP Remoto.
 Verifica o MCPAuthMiddleware, autenticação por Bearer / X-API-Key / Query,
 tratamento de ambiente de produção e integração no FastAPI.
@@ -119,6 +119,50 @@ class TestFastAPIMCPMountIntegration(unittest.TestCase):
             # /mcp/sse com auth inválida é barrado
             r_mcp_invalid = client.get("/mcp/sse", headers={"Authorization": "Bearer bad-token"})
             self.assertEqual(r_mcp_invalid.status_code, 401)
+
+    def test_antigravity_initialize_post_sse_handling(self):
+        """
+        Verifica que POST /mcp/sse (enviado pelo cliente Antigravity/agy ao inicializar)
+        não retorna 405 Method Not Allowed, e sim é processado com 202 Accepted.
+        """
+        import uuid
+        import anyio
+        from src.main import app
+
+        # Extrai o sse_transport montado na aplicação principal
+        sse_transport = None
+        for r in app.routes:
+            if getattr(r, "path", "") == "/mcp":
+                sse_transport = r.app.app.sse_transport
+                break
+
+        self.assertIsNotNone(sse_transport)
+
+        # Registra um mock writer para a sessão
+        mock_id = uuid.uuid4()
+        writer, reader = anyio.create_memory_object_stream(10)
+        sse_transport._read_stream_writers[mock_id] = writer
+
+        with patch.dict(os.environ, {"MAEVE_MCP_SECRET": "antigravity-secret-key"}):
+            client = TestClient(app)
+            # Envia POST /mcp/sse com method: initialize (sem query param session_id)
+            resp = client.post(
+                "/mcp/sse",
+                headers={"Authorization": "Bearer antigravity-secret-key"},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "antigravity", "version": "1.0"}
+                    }
+                }
+            )
+            # NÃO deve ser 405 Method Not Allowed
+            self.assertNotEqual(resp.status_code, 405)
+            self.assertEqual(resp.status_code, 202)
 
 
 if __name__ == "__main__":
