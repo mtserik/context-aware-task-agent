@@ -5,6 +5,51 @@ This document serves as the master context ledger for **Project Maeve** (working
 
 ---
 
+## 0. Engineering Charter & AI Operating System (Staff Persona)
+
+> **Mandato Obrigatório para qualquer Agente ou Engenheiro interagindo neste repositório:**
+> Atue com o rigor técnico, visão holística e padrões de excelência de um **Staff Software Engineer & Staff Data Scientist**.
+> Não aceite soluções paliativas ("quick-and-dirty fixes"), cosméticas (como fragmentação ingênua de arquivos sem evolução do modelo de objetos) ou código espaguete acoplado a frameworks. Avalie toda solução a partir dos **primeiros princípios** (*first-principles reasoning*), garantindo arquitetura limpa, modelagem orientada a objetos (POO), rigor matemático e máxima eficiência computacional.
+
+### 0.1 Princípios de Engenharia de Software & POO
+1. **Modelagem Orientada a Objetos (POO) & SOLID:**
+   - **Single Responsibility (SRP):** Cada classe e módulo possui uma única razão para mudar. Um componente não deve misturar sanitização de mensagens, conexão com I/O, formatação de prompt e inferência de modelo.
+   - **Open/Closed (OCP):** Aberto para extensão, fechado para modificação. Novos provedores de tarefas, vetores ou memória devem ser implementados via polimorfismo e interfaces bem definidas, nunca por cadeias de `if/else`.
+   - **Liskov Substitution (LSP) & Interface Segregation (ISP):** Crie protocolos e interfaces enxutos (`typing.Protocol` / ABC). Componentes clientes não devem depender de métodos que não utilizam.
+   - **Dependency Inversion (DIP):** Módulos de alto nível (orquestradores de agente) não devem depender diretamente de detalhes concretos de baixo nível (APIs REST específicas). Devem depender de abstrações de repositório e serviços de domínio.
+2. **Clean Architecture & Hexagonal Ports/Adapters:**
+   - **Camada de Domínio / Negócio (Core Domain):** Lógica pura de negócio totalmente desacoplada de frameworks (LangGraph, FastAPI, FastMCP). Criar uma hierarquia de subtarefas, calcular time-blocking, formatar notas com metadados ou consolidar decisões são regras puras de domínio.
+   - **Camada de Adaptadores (Inbound & Outbound):**
+     - *Inbound Adapters (Drivers):* LangGraph `@tool`, FastMCP `@mcp.tool()`, Telegram Handlers, rotas FastAPI.
+     - *Outbound Adapters (Driven):* Clientes HTTP (TickTick REST/MCP), Qdrant Vector Client, Supabase Connection Pool, Git CLI Subprocess.
+   - **Regra de Ouro:** **NUNCA** embutir anotações de framework de interface (`@tool`, `@app.post`, `@mcp.tool`) com a implementação da regra de negócio. A ferramenta de framework deve ser apenas um adaptador fino de 3 a 5 linhas chamando o método de domínio correspondente.
+3. **Padrões de Design Estruturais e Criacionais:**
+   - **Facade / Service Layer:** Unifica e simplifica fluxos complexos para os orquestradores.
+   - **Repository / Registry:** Isola o ciclo de vida, persistência e instâncias lazy singletons.
+   - **Adapter Pattern:** Normaliza contratos heterogêneos (ex: TickTick REST vs TickTick MCP JSON-RPC).
+   - **Strategy Pattern:** Permite trocar dinamicamente algoritmos de busca (semântica vs híbrida vs exata) e roteamento de modelos.
+
+### 0.2 Rigor Matemático, Ciência de Dados & RAG
+1. **Espaço Vetorial e Álgebra Linear:**
+   - Vetores de embedding (ex: `text-embedding-3-small`, 1536 dimensões) residem na hiperesfera $\mathbb{R}^{1536}$. O produto escalar normalizado (Cosine Similarity) quantifica a proximidade semântica:
+     $$\text{sim}(\mathbf{u}, \mathbf{v}) = \frac{\mathbf{u} \cdot \mathbf{v}}{\|\mathbf{u}\|_2 \|\mathbf{v}\|_2}$$
+   - **Filtro de Ruído & Limiares:** Buscas vetoriais ingênuas que sempre retornam os $k$ primeiros vizinhos degradam o raciocínio do modelo ao injetar ruído irrelevante. Utilize limiares de corte de score (*similarity score threshold*) e filtre consultas onde a variância de similaridade não justifique contexto externo.
+2. **Chunking Semântico & Densidade Informacional:**
+   - O chunking de conhecimento não deve ser um truncamento cego por caracteres. Deve respeitar fronteiras sintáticas do Markdown (árvore de cabeçalhos H1/H2/H3, blocos de código atômicos, tabelas) mantendo metadados essenciais (caminho relativo, tags, frontmatter).
+3. **Economia de Tokens, Atenção e Complexidade Algorítmica:**
+   - A complexidade do mecanismo de Self-Attention cresce com o tamanho da janela de contexto ($O(N^2)$ a $O(N \log N)$).
+   - Injetar dezenas de ferramentas simultâneas no prompt consome tokens a cada turno e induz *Tool Bleed* / confusão de parâmetros. A seleção de ferramentas deve ser determinística e fundamentada em **Intent-Based Dynamic Tool Routing**.
+4. **Tratamento de Incerteza e Probabilidade:**
+   - O roteamento de intenção e complexidade deve operar com faixas de confiança probabilística. Em situações de alta entropia ou ambiguidade, o sistema deve adotar comportamentos conservadores e explicáveis com fallbacks predeterminados.
+
+### 0.3 Diretrizes para Máxima Performance e Velocidade de Desenvolvimento
+- **Tipagem Estrita Estática (Strict Type Annotations):** 100% do código deve ser tipado com `typing`, `pydantic.BaseModel` e `TypedDict`. Zero `Any` sem justificativa explícita.
+- **Proteção Absoluta do Event Loop Assíncrono:** Nenhuma operação de rede, filesystem síncrono ou subprocesso pode travar o event loop principal. Use `asyncio.to_thread` ou clientes nativamente assíncronos.
+- **Connection Pooling & Idempotência:** Conexões de rede persistentes com timeouts estritos. Operações de mutação devem possuir características idempotentes sempre que viável.
+- **Testabilidade como Cidadão de Primeira Classe:** A arquitetura deve permitir testar a lógica de negócios em milissegundos com mocks leves injetados, sem necessidade de levantar serviços externos ou containers.
+
+---
+
 ## 1. Project Vision & Core Objective
 
 The goal of Project Maeve is to develop a highly personalized, autonomous, cross-platform productivity engine. Unlike standard reactive chatbots, Maeve acts as a **Memory-Augmented Autonomous Agent** that bridges semantic knowledge management with operational real-time execution.
@@ -65,14 +110,23 @@ Once verified locally, the application shifts seamlessly to a cloud environment 
 
 ---
 
-## 3. Semantic Engine Logic (How the Agent Decides)
+## 3. Semantic Engine Logic & Domain-Driven Orchestration
 
-Maeve eliminates rigid `if/else` conditional scripts by utilizing LLM **Function Calling / Tool Calling** and semantic routing.
+A tomada de decisão da Maeve é fundamentada em **Domain-Driven Architecture** e **Intent-Based Dynamic Tool Routing**, eliminando tanto scripts condicionais rígidos quanto o desperdício computacional de injetar dezenas de ferramentas simultâneas no prompt.
 
-The Python runtime translates systemic integrations (Notion pages, TickTick task blocks) into strict Pydantic schemas equipped with descriptive semantic strings. The underlying LLM (e.g., `gpt-4o-mini` for fast routing, `claude-3.5-sonnet` for deep reasoning) acts as a context router:
-1.  Analyzes user intent dynamically (e.g., "Anote para mim..." vs. "Me lembra de...").
-2.  Extracts specific entities (`task_name`, `due_date`, `note_content`, `category`).
-3.  Executes the precise tool callback with the structured arguments.
+### 3.1 O Pipeline de Decisão (Do Usuário à Execução)
+1. **Classificação de Intenção & Complexidade (Router Node):**
+   - Recebe a mensagem do usuário e aplica a heurística Fast-Path ($O(1)$) para saudações e comandos triviais.
+   - Em caso de mensagens informacionais/operacionais, classifica:
+     - `complexity`: $1$ a $5$ (determina a capacidade do modelo: `fast_model` vs `smart_model`).
+     - `domain`: `tasks` (TickTick), `knowledge` (Obsidian), `search` (Web), `reminders` (Supabase/TG) ou `chat` (sem ferramentas).
+2. **Injeção Restrita de Ferramentas (Dynamic Tool Binding):**
+   - Ao invés de expor todas as 22 ferramentas (que degradam a atenção do transformador e induzem *Tool Bleed*), o modelo recebe **apenas o subconjunto de ferramentas correspondente ao domínio ativo** (geralmente de 2 a 5 ferramentas).
+3. **Resolução de Contexto & Compilação de Prompt (Context Pipeline):**
+   - O enriquecimento de contexto é modular: RAG vetorial seletivo (filtrado por similaridade semântica), consciência temporal e dados de perfil do usuário.
+4. **Execução Segura & Loop ReAct Sanitizado:**
+   - As ferramentas do LangGraph invocam a **Camada de Domínio Pura**, garantindo que regras de negócio sejam agnósticas da interface.
+   - O histórico de mensagens é higienizado contra mensagens órfãs e violações de contrato das APIs de chat.
 
 ---
 
@@ -125,7 +179,7 @@ context-aware-task-agent/
 
 | ID | Severity | File(s) | Issue | Status & Fix |
 |:---|:---------|:--------|:------|:-------------|
-| A1 | 🔴 High | `engine.py` | **God Module.** Mixing tool definitions, service init, routing logic, and graph building. | ⏳ Em progresso na Fase 3. Ferramentas e serviços isolados via Registry. |
+| A1 | 🔴 High | `engine.py` | **God Module & Monolithic Tool Bleed.** 613 linhas acumulando 22 ferramentas acopladas ao LangGraph, RAG, sanitização de histórico e orquestração. Provoca Tool Bleed e inviabiliza reuso no MCP. | 🔨 **Especificado:** Refatoração em Arquitetura Limpa (Domain Actions desacopladas em `src/domain/`, Adaptadores de Protocolo para LangGraph e FastMCP, e Intent-Based Dynamic Tool Routing). |
 | A2 | 🔴 High | `engine.py`, `main.py` | **Duplicate service instantiation.** Stateful singletons duplicated. | ✅ **Resolvido.** Criado `src/services/registry.py` com singletons lazy desacoplados. |
 | A3 | 🟡 Medium | `telegram_bot.py` | **Circular imports.** `from src.main import ...` inside methods. | ✅ **Resolvido.** `telegram_bot.py` consome dependências via `registry.py`. |
 | A4 | 🟡 Medium | `api/` directory | **Empty module.** FastAPI routes inline in `main.py`. | ⏳ Reservado para migração de rotas REST. |
