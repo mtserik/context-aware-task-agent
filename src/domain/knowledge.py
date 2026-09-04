@@ -81,6 +81,27 @@ class KnowledgeDomainService:
         except Exception as e:
             return KnowledgeResult(success=False, message=f"Erro ao mover: {str(e)}")
 
+    async def batch_move_notes(self, moves: List[Dict[str, str]]) -> KnowledgeResult:
+        """
+        Move múltiplas notas no Obsidian de forma atômica com um único commit/push final.
+        """
+        if not moves:
+            return KnowledgeResult(success=False, message="Nenhuma movimentação informada.")
+        try:
+            res = await self.obsidian.batch_move_items(moves)
+            success_count = res.get("success_count", 0)
+            failed_count = res.get("failed_count", 0)
+            msg = f"Movimentação em lote concluída: {success_count} notas movidas com sucesso."
+            if failed_count > 0:
+                msg += f" ({failed_count} falhas registradas)."
+            return KnowledgeResult(
+                success=(success_count > 0 or failed_count == 0),
+                message=msg,
+                data=res
+            )
+        except Exception as e:
+            return KnowledgeResult(success=False, message=f"Erro na movimentação em lote: {str(e)}")
+
     async def cleanup_empty_folders(self) -> KnowledgeResult:
         """Remove pastas vazias no Vault."""
         try:

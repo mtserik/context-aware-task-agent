@@ -1,7 +1,9 @@
 import os
 import re
+import asyncio
 import logging
 import tempfile
+from typing import List, Tuple, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler, CallbackQueryHandler
 from openai import AsyncOpenAI
@@ -48,6 +50,112 @@ def format_telegram_markdown(text: str) -> str:
 
     return processed
 
+
+def _heal_markdown_boundary(chunk: str, next_chunk: str) -> Tuple[str, str]:
+    """
+    Assegura que entidades de formatação do Markdown (blocos de código, inline code, negrito)
+    não fiquem abertas no final de um chunk e reabre adequadamente no início do chunk seguinte.
+    """
+    # 1. Blocos de código (```)
+    code_block_matches = re.findall(r"```([a-zA-Z0-9_-]*)", chunk)
+    total_code_fences = len(re.findall(r"```", chunk))
+    if total_code_fences % 2 != 0:
+        last_lang = code_block_matches[-1] if code_block_matches else ""
+        chunk = chunk.rstrip() + "\n```"
+        next_chunk = f"```{last_lang}\n" + next_chunk.lstrip()
+
+    # 2. Código inline (crase única `)
+    temp = re.sub(r"```[\s\S]*?```", "", chunk)
+    single_ticks = len(re.findall(r"`", temp))
+    if single_ticks % 2 != 0:
+        chunk = chunk + "`"
+        next_chunk = "`" + next_chunk
+
+    # 3. Negrito Telegram (*)
+    temp_no_code = re.sub(r"```[\s\S]*?```", "", chunk)
+    temp_no_code = re.sub(r"`[^`\n]+`", "", temp_no_code)
+    asterisks = len(re.findall(r"\*", temp_no_code))
+    if asterisks % 2 != 0:
+        chunk = chunk + "*"
+        next_chunk = "*" + next_chunk
+
+    return chunk, next_chunk
+
+
+def split_into_semantic_chunks(
+    text: str,
+    max_chunk_size: int = 1200,
+    target_chunk_size: int = 800,
+    max_messages: int = 4
+) -> List[str]:
+    """
+    Divide um texto extenso em balões de mensagem menores com quebras semanticamente naturais
+    (parágrafos e sentenças), simulando um fluxo humano de pensamento e respeitando os limites do Telegram.
+    """
+    if not text or not text.strip():
+        return []
+
+    text = text.strip()
+    if len(text) <= max_chunk_size:
+        return [text]
+
+    paragraphs = text.split("\n\n")
+    atomic_pieces: List[str] = []
+
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            continue
+        if len(p) <= max_chunk_size:
+            atomic_pieces.append(p)
+        else:
+            lines = re.split(r"((?<=[.!?])\s+|\n)", p)
+            current_piece = ""
+            for line in lines:
+                if not line:
+                    continue
+                if len(current_piece) + len(line) <= max_chunk_size:
+                    current_piece += line
+                else:
+                    if current_piece.strip():
+                        atomic_pieces.append(current_piece.strip())
+                    current_piece = line
+            if current_piece.strip():
+                atomic_pieces.append(current_piece.strip())
+
+    raw_chunks: List[str] = []
+    current_chunk = ""
+    for piece in atomic_pieces:
+        if not current_chunk:
+            current_chunk = piece
+        elif (len(current_chunk) + len(piece) + 2 <= max_chunk_size) and (len(current_chunk) < target_chunk_size):
+            current_chunk += "\n\n" + piece
+        else:
+            raw_chunks.append(current_chunk)
+            current_chunk = piece
+    if current_chunk:
+        raw_chunks.append(current_chunk)
+
+    healed_chunks: List[str] = []
+    for i in range(len(raw_chunks)):
+        if i == 0:
+            healed_chunks.append(raw_chunks[i])
+        else:
+            prev_chunk, curr_chunk = _heal_markdown_boundary(healed_chunks[-1], raw_chunks[i])
+            healed_chunks[-1] = prev_chunk
+            healed_chunks.append(curr_chunk)
+
+    if len(healed_chunks) > max_messages:
+        consolidated = healed_chunks[:max_messages - 1]
+        remaining = "\n\n".join(healed_chunks[max_messages - 1:])
+        if len(remaining) > 3800:
+            remaining = remaining[:3800] + "\n\n📌 _(Conteúdo extenso resumido. Detalhes completos preservados no histórico.)_"
+        consolidated.append(remaining)
+        healed_chunks = consolidated
+
+    return healed_chunks
+
+
 class TelegramService:
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -72,39 +180,43 @@ class TelegramService:
             "Seu Second Brain está conectado via Telegram. Como posso te ajudar?"
         )
 
-    async def _send_long_message(self, messageable, text: str, **kwargs):
+    async def _send_long_message(self, messageable, text: str, context: Optional[ContextTypes.DEFAULT_TYPE] = None, **kwargs):
         """
-        Envia mensagens dividindo em blocos de até 4000 caracteres para respeitar o limite do Telegram (4096),
-        aplicando formatação Markdown nativa do Telegram com fallback automático para texto puro em caso de erro de parse.
+        Envia mensagens dividindo em blocos semanticamente naturais (fluxo humano de pensamento)
+        com espaçamento de leitura agradável no Telegram, aplicando pacing com typing,
+        notificações silenciosas a partir do 2º balão e cura de entidades Markdown.
         """
         formatted_text = format_telegram_markdown(text)
-        max_len = 4000
+        chunks = split_into_semantic_chunks(formatted_text, max_chunk_size=1200, target_chunk_size=800, max_messages=4)
 
-        if len(formatted_text) <= max_len:
-            chunks = [formatted_text]
-        else:
-            chunks = []
-            remaining = formatted_text
-            while len(remaining) > max_len:
-                split_idx = remaining.rfind("\n", 0, max_len)
-                if split_idx == -1 or split_idx < max_len // 2:
-                    split_idx = max_len
-                chunks.append(remaining[:split_idx])
-                remaining = remaining[split_idx:].lstrip("\n")
-            if remaining:
-                chunks.append(remaining)
+        if not chunks:
+            chunks = [formatted_text] if formatted_text else []
 
-        for chunk in chunks:
-            try:
-                await messageable.reply_text(chunk, parse_mode="Markdown", **kwargs)
-            except Exception as md_err:
-                logging.warning(f"Falha ao enviar com parse_mode='Markdown' ({md_err}). Enviando como texto simples...")
+        for idx, chunk in enumerate(chunks):
+            is_first = (idx == 0)
+            send_kwargs = dict(kwargs)
+
+            if not is_first:
+                send_kwargs["disable_notification"] = True
                 try:
-                    await messageable.reply_text(chunk, **kwargs)
-                except Exception as send_err:
-                    logging.error(f"Erro definitivo ao enviar chunk para o Telegram: {send_err}")
+                    if hasattr(messageable, "chat") and hasattr(messageable.chat, "send_action"):
+                        await messageable.chat.send_action(action="typing")
+                    elif context and hasattr(context, "bot") and hasattr(messageable, "chat_id"):
+                        await context.bot.send_chat_action(chat_id=messageable.chat_id, action="typing")
+                except Exception:
+                    pass
+                await asyncio.sleep(1.0)
 
-    async def _respond_with_voice(self, text: str, update: Update):
+            try:
+                await messageable.reply_text(chunk, parse_mode="Markdown", **send_kwargs)
+            except Exception as md_err:
+                logging.warning(f"Falha ao enviar chunk {idx + 1} com parse_mode='Markdown' ({md_err}). Enviando como texto simples...")
+                try:
+                    await messageable.reply_text(chunk, **send_kwargs)
+                except Exception as send_err:
+                    logging.error(f"Erro definitivo ao enviar chunk {idx + 1} para o Telegram: {send_err}")
+
+    async def _respond_with_voice(self, text: str, update: Update, context: Optional[ContextTypes.DEFAULT_TYPE] = None):
         """Converte texto em áudio e envia para o usuário."""
         temp_voice_path = None
         try:
@@ -134,7 +246,7 @@ class TelegramService:
                 
         except Exception as e:
             logging.error(f"Erro no TTS: {e}")
-            await self._send_long_message(update.message, f"⚠️ Tive um problema ao gerar minha resposta em áudio, mas aqui está o texto:\n\n{text}")
+            await self._send_long_message(update.message, f"⚠️ Tive um problema ao gerar minha resposta em áudio, mas aqui está o texto:\n\n{text}", context=context)
         finally:
             # 4. Limpeza garantida
             if temp_voice_path and os.path.exists(temp_voice_path):
@@ -257,9 +369,9 @@ class TelegramService:
             final_response = final_response.strip()
             if final_response:
                 if force_voice or "responda em áudio" in text.lower() or "fale" in text.lower():
-                    await self._respond_with_voice(final_response, update)
+                    await self._respond_with_voice(final_response, update, context=context)
                 else:
-                    await self._send_long_message(update.message, final_response)
+                    await self._send_long_message(update.message, final_response, context=context)
             else:
                 await update.message.reply_text("Não consegui gerar uma resposta.")
 

@@ -154,7 +154,7 @@ _resolve_temporal_context = resolve_temporal_context
 def create_chat_model(
     model_name: str,
     temperature: Optional[float] = 0,
-    max_tokens: int = 2048,
+    max_tokens: Optional[int] = None,
 ) -> BaseChatModel:
     """
     Factory polimórfica para instanciação dinâmica de modelos de linguagem (LLMs).
@@ -162,6 +162,11 @@ def create_chat_model(
     Em caso de chave ausente da Anthropic, realiza fallback gracioso para OpenAI.
     """
     model_name_clean = model_name.strip()
+    if max_tokens is None:
+        try:
+            max_tokens = int(os.getenv("MAEVE_MAX_TOKENS", "4096"))
+        except ValueError:
+            max_tokens = 4096
 
     # 1. Provedor Anthropic Claude
     if model_name_clean.lower().startswith("claude"):
@@ -422,7 +427,8 @@ class MaeveAgent:
 
     async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):
         """Retorna stream de eventos para visualização e feedback no Telegram."""
-        config = {"configurable": {"thread_id": thread_id}}
+        recursion_limit = int(os.getenv("MAEVE_RECURSION_LIMIT", "100"))
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}
         input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
 
         async for event in self._graph.astream_events({"messages": [input_msg]}, config=config, version="v2"):
@@ -430,7 +436,8 @@ class MaeveAgent:
 
     async def run(self, user_input: Any, thread_id: str = "default-thread") -> str:
         """Execução direta assíncrona retornando a resposta em texto."""
-        config = {"configurable": {"thread_id": thread_id}}
+        recursion_limit = int(os.getenv("MAEVE_RECURSION_LIMIT", "100"))
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}
         input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
         result = await self._graph.ainvoke({"messages": [input_msg]}, config=config)
         for m in reversed(result.get("messages", [])):

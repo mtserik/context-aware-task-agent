@@ -6,7 +6,7 @@ import re
 import yaml
 import tempfile
 import shutil
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 class ObsidianService:
     """
@@ -479,6 +479,61 @@ class ObsidianService:
         if commit_message:
             await self.push(commit_message)
         return True
+
+    async def batch_move_items(
+        self,
+        moves: List[Dict[str, str]],
+        commit_message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Move múltiplos arquivos/pastas no vault em uma única transação atômica,
+        executando apenas um commit e push ao término de todas as operações.
+        
+        Args:
+            moves: Lista de dicionários no formato [{'old_path': '...', 'new_path': '...'}, ...]
+            commit_message: Mensagem personalizada de commit (opcional).
+        """
+        import shutil
+        success_moves = []
+        failed_moves = []
+
+        for item in moves:
+            old_rel = item.get("old_path", "").strip()
+            new_rel = item.get("new_path", "").strip()
+            if not old_rel or not new_rel:
+                failed_moves.append({"old_path": old_rel, "new_path": new_rel, "error": "Caminhos inválidos"})
+                continue
+
+            try:
+                old_full = self._safe_resolve(old_rel)
+                new_full = self._safe_resolve(new_rel)
+
+                if not os.path.exists(old_full):
+                    failed_moves.append({"old_path": old_rel, "new_path": new_rel, "error": "Origem não encontrada"})
+                    continue
+
+                if old_rel.strip("/") in ["", ".", "Inbox", "Projects", "Areas", "Resources", "Archives"]:
+                    failed_moves.append({"old_path": old_rel, "new_path": new_rel, "error": "Operação negada na raiz"})
+                    continue
+
+                os.makedirs(os.path.dirname(new_full), exist_ok=True)
+                shutil.move(old_full, new_full)
+                success_moves.append({"old_path": old_rel, "new_path": new_rel})
+            except Exception as move_err:
+                failed_moves.append({"old_path": old_rel, "new_path": new_rel, "error": str(move_err)})
+
+        # Realiza apenas UM commit e push atômico se houve ao menos uma movimentação bem-sucedida
+        if success_moves:
+            msg = commit_message or f"Maeve: Movimentação em lote de {len(success_moves)} notas"
+            await self.push(msg)
+
+        return {
+            "total": len(moves),
+            "success_count": len(success_moves),
+            "failed_count": len(failed_moves),
+            "success_moves": success_moves,
+            "failed_moves": failed_moves
+        }
 
     async def cleanup_empty_folders(self, commit_message: str = None) -> List[str]:
         """

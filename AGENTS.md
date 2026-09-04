@@ -554,3 +554,30 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
 #### 5. Qualidade, Testes & CI/CD
 - 100% de aprovação na suíte de testes unitários e de regressão (`test_domain_services.py` e `test_bugfixes_regression.py`).
 - Commits `b9ac39f`, `a3e56fb` e `61b7c03` integrados na branch `main` e deployados com sucesso no Railway.
+
+---
+
+### 9.2 Sprint 11: Fluxo Humano de Mensagens no Telegram & Operações Atômicas em Lote no Obsidian (2026-09-04)
+
+> **Objetivo:** Eliminar truncamentos de respostas em mensagens longas, simular fluxo de pensamento conversacional humano no Telegram com autocura de Markdown e implementar operações atômicas em lote para o Obsidian Vault, evitando sobrecarga de commits e recursão no LangGraph.
+
+#### 1. Fluxo Humano de Mensagens & Pacing Conversacional (B17)
+- **Problema:** Mensagens densas sofriam corte abrupto por teto de `max_tokens=2048` e eram vomitadas em um único balão maciço no Telegram ou quebravam formatação caso o corte caísse no meio de blocos de código ou asteriscos.
+- **Solução Técnica:**
+  - **Elevação de Tokens:** `create_chat_model` em `src/agent/engine.py` ampliado para default `max_tokens=4096` (com suporte a override via `MAEVE_MAX_TOKENS`).
+  - **Fatiamento Semântico (`split_into_semantic_chunks`):** Implementado em `src/services/telegram_bot.py`. Divide respostas extensas por parágrafos duplos (`\n\n`) e fronteiras sintáticas em balões confortáveis (800 a 1.200 caracteres), respeitando o teto de 4 balões (`max_messages=4`).
+  - **Autocura de Entidades Markdown (`_heal_markdown_boundary`):** Se uma divisão cortar no meio de um bloco de código (```` ``` ````) ou negrito (`*`), fecha a tag no final do balão atual e reabre adequadamente no início do balão seguinte.
+  - **Pacing Humano & Silent Push:** Envio da 1ª mensagem com notificação normal. Mensagens subsequentes aplicam `send_chat_action("typing")`, delay de 1.0 segundo e `disable_notification=True` para evitar fadiga de notificações.
+  - **Diretrizes de Persona:** Instruções de ritmo conversacional integradas ao `FAST_PROMPT_TEMPLATE` e `SMART_PROMPT_TEMPLATE`.
+
+#### 2. Operações em Lote no Obsidian & Push Atômico (B18)
+- **Problema:** Ao processar tarefas longas (ex: mover 31 notas no Vault), a Maeve disparava 31 commits e 31 pushes via rede SSH de forma síncrona, causando concorrência de `index.lock`, lentidão extrema (~90s) e esgotamento do `recursion_limit` do LangGraph (padrão 25).
+- **Solução Técnica:**
+  - **Operação em Lote no Serviço (`batch_move_items`):** Implementada em `src/services/obsidian.py`. Realiza todas as movimentações locais no filesystem em memória/disco e executa **apenas UM único** `git add .`, **um único** `git commit` e **um único** `git push origin HEAD:main` atômico ao final.
+  - **Camada de Domínio Pura (`batch_move_notes`):** Integrada ao `KnowledgeDomainService` em `src/domain/knowledge.py`.
+  - **Adaptador Inbound LangGraph (`batch_move_obsidian_notes`):** Criada a ferramenta `@tool` em `src/agent/tools/knowledge_tools.py` e registrada no registry `KNOWLEDGE_TOOLS`.
+  - **Expansão de Recursão no LangGraph:** Configurado `recursion_limit: 100` (override via `MAEVE_RECURSION_LIMIT`) no `engine.py` para ambos `run` e `run_stream`.
+  - **Regra de Lote nos Prompts:** Adicionada a regra mandatória de lote para o Obsidian no protocolo ReAct da Maeve.
+
+#### 3. Qualidade & Testes de Regressão
+- Suíte `test_domain_services.py` e `test_bugfixes_regression.py` atualizadas com testes específicos para fatiamento semântico, cura de tags Markdown e movimentação atômica em lote com um único push Git (100% aprovados).

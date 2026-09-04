@@ -76,6 +76,29 @@ def test_knowledge_domain_note_creation():
     mock_obsidian.write_note.assert_called_once()
     print("[OK] test_knowledge_domain_note_creation PASSOU")
 
+def test_knowledge_domain_batch_move_notes():
+    """Valida se o KnowledgeDomainService delega para batch_move_items e consolida os resultados."""
+    mock_obsidian = MagicMock()
+    mock_obsidian.batch_move_items = AsyncMock(return_value={
+        "total": 3,
+        "success_count": 3,
+        "failed_count": 0,
+        "success_moves": [{"old_path": "a.md", "new_path": "b.md"}],
+        "failed_moves": []
+    })
+
+    svc = KnowledgeDomainService(obsidian_service=mock_obsidian)
+    moves = [
+        {"old_path": "Inbox/Nota1.md", "new_path": "Projects/Nota1.md"},
+        {"old_path": "Inbox/Nota2.md", "new_path": "Projects/Nota2.md"},
+        {"old_path": "Inbox/Nota3.md", "new_path": "Projects/Nota3.md"},
+    ]
+    result = asyncio.run(svc.batch_move_notes(moves))
+    assert result.success is True
+    assert "3 notas movidas" in result.message
+    mock_obsidian.batch_move_items.assert_called_once_with(moves)
+    print("[OK] test_knowledge_domain_batch_move_notes PASSOU")
+
 def test_fastapi_endpoints_health():
     """Valida se os endpoints do FastAPI montados via APIRouter respondem com sucesso."""
     with TestClient(app) as client:
@@ -294,15 +317,62 @@ def test_format_telegram_markdown_normalization():
     print("[OK] test_format_telegram_markdown_normalization PASSOU")
 
 
+def test_telegram_semantic_chunking_and_boundary_healing():
+    """Valida o fatiamento semântico de mensagens e a autocura de entidades Markdown."""
+    from src.services.telegram_bot import split_into_semantic_chunks, _heal_markdown_boundary
+
+    # 1. Mensagem curta (não fatia)
+    short = "Olá Erik, sua agenda está limpa para hoje!"
+    assert split_into_semantic_chunks(short, max_chunk_size=500) == [short]
+
+    # 2. Mensagem vazia
+    assert split_into_semantic_chunks("") == []
+    assert split_into_semantic_chunks(None) == []
+
+    # 3. Autocura de blocos de código
+    code_part1 = "Aqui está a implementação:\n```python\ndef conectar():\n    return True"
+    code_part2 = "    print('conectado!')\n```\nTudo pronto."
+    h1, h2 = _heal_markdown_boundary(code_part1, code_part2)
+    assert h1.endswith("```")
+    assert h2.startswith("```python")
+    assert h1.count("```") % 2 == 0
+    assert h2.count("```") % 2 == 0
+
+    # 4. Autocura de negrito
+    bold_part1 = "Atenção: este é um *ponto crítico"
+    bold_part2 = "que precisa ser resolvido agora* com cuidado."
+    hb1, hb2 = _heal_markdown_boundary(bold_part1, bold_part2)
+    assert hb1.endswith("*")
+    assert hb2.startswith("*")
+    assert hb1.count("*") % 2 == 0
+    assert hb2.count("*") % 2 == 0
+
+    # 5. Fatiamento semântico com limite de mensagens
+    long_doc = (
+        "*Seção 1 - Arquitetura*\n\n" + ("Explicação de arquitetura limpa e desacoplamento de camadas. " * 10) +
+        "\n\n*Seção 2 - Código*\n\n```python\n" + ("print('executando pipeline de dados...')\n" * 12) + "```\n\n" +
+        "*Seção 3 - Conclusão*\n\n" + ("Deploy efetuado com sucesso sem indisponibilidade. " * 8)
+    )
+    chunks = split_into_semantic_chunks(long_doc, max_chunk_size=600, target_chunk_size=400, max_messages=4)
+    assert len(chunks) <= 4
+    for c in chunks:
+        assert c.count("```") % 2 == 0
+        assert c.count("*") % 2 == 0
+
+    print("[OK] test_telegram_semantic_chunking_and_boundary_healing PASSOU")
+
+
 if __name__ == "__main__":
     test_dynamic_tool_binding_subsets()
     test_task_domain_parent_project_inheritance()
     test_task_domain_time_blocking_normalization()
     test_knowledge_domain_note_creation()
+    test_knowledge_domain_batch_move_notes()
     test_fastapi_endpoints_health()
     test_multi_provider_model_factory()
     test_temporal_context_and_timezone_handling()
     test_asymmetric_persona_prompt_system()
     test_extract_text_from_message_resilience()
     test_format_telegram_markdown_normalization()
+    test_telegram_semantic_chunking_and_boundary_healing()
     print("\n>>> TODOS OS TESTES UNITARIOS DE DOMINIO PASSARAM! <<<")

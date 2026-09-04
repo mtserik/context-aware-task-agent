@@ -1,3 +1,4 @@
+from typing import List, Dict
 from langchain_core.tools import tool
 from src.domain.knowledge import KnowledgeDomainService
 
@@ -23,8 +24,17 @@ async def delete_obsidian_item(relative_path: str):
 
 @tool
 async def move_obsidian_item(old_path: str, new_path: str):
-    """Move ou renomeia um arquivo ou pasta dentro do Vault."""
+    """Move ou renomeia um único arquivo ou pasta dentro do Vault."""
     result = await _knowledge_domain.move_item(old_path=old_path, new_path=new_path)
+    return result.to_agent_message()
+
+@tool
+async def batch_move_obsidian_notes(moves: List[Dict[str, str]]):
+    """Move ou renomeia múltiplas notas no Obsidian em uma única operação atômica em lote.
+    Executa apenas UM commit e push ao término de todas as movimentações.
+    Cada item em 'moves' deve ser um dicionário com {'old_path': 'caminho/antigo.md', 'new_path': 'caminho/novo.md'}.
+    Sempre utilize esta ferramenta para mover 2 ou mais notas."""
+    result = await _knowledge_domain.batch_move_notes(moves=moves)
     return result.to_agent_message()
 
 @tool
@@ -62,6 +72,7 @@ KNOWLEDGE_TOOLS = [
     list_obsidian_folders,
     delete_obsidian_item,
     move_obsidian_item,
+    batch_move_obsidian_notes,
     cleanup_empty_obsidian_folders,
     list_obsidian_notes,
     get_obsidian_note_details,

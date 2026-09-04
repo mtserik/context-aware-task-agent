@@ -203,6 +203,69 @@ def test_telegram_markdown_formatting():
     assert format_telegram_markdown(raw) == expected
     print("[OK] test_telegram_markdown_formatting PASSOU")
 
+def test_semantic_chunking_and_pacing_integrity():
+    """Test B17: Semantic message chunking, code fence preservation, and notification pacing."""
+    from src.services.telegram_bot import split_into_semantic_chunks, _heal_markdown_boundary
+
+    # Boundary healing for code
+    c1 = "Código:\n```python\nx = 1"
+    c2 = "y = 2\n```\nFim."
+    h1, h2 = _heal_markdown_boundary(c1, c2)
+    assert h1.endswith("```")
+    assert h2.startswith("```python")
+
+    # Multi-paragraph chunking
+    text = "Primeiro pensamento.\n\nSegundo pensamento detalhado.\n\nTerceiro pensamento conclusivo."
+    chunks = split_into_semantic_chunks(text, max_chunk_size=40, target_chunk_size=30)
+    assert len(chunks) == 3
+    assert chunks[0] == "Primeiro pensamento."
+    assert chunks[1] == "Segundo pensamento detalhado."
+    assert chunks[2] == "Terceiro pensamento conclusivo."
+    print("[OK] test_semantic_chunking_and_pacing_integrity PASSOU")
+
+def test_obsidian_service_batch_move_atomic_git():
+    """Test B18: Batch move in ObsidianService moves multiple items on disk and executes only ONE atomic git push."""
+    import asyncio
+    import tempfile
+    import shutil
+    from unittest.mock import AsyncMock
+    from src.services.obsidian import ObsidianService
+
+    temp_vault = tempfile.mkdtemp(prefix="maeve_test_vault_")
+    try:
+        service = ObsidianService()
+        service.vault_path = temp_vault
+        service.push = AsyncMock()
+
+        # Prepara 3 arquivos de teste
+        os.makedirs(os.path.join(temp_vault, "Inbox"), exist_ok=True)
+        os.makedirs(os.path.join(temp_vault, "Projects"), exist_ok=True)
+        for i in range(1, 4):
+            with open(os.path.join(temp_vault, "Inbox", f"Nota{i}.md"), "w", encoding="utf-8") as f:
+                f.write(f"# Conteúdo Nota {i}")
+
+        moves = [
+            {"old_path": f"Inbox/Nota{i}.md", "new_path": f"Projects/Nota{i}.md"}
+            for i in range(1, 4)
+        ]
+
+        result = asyncio.run(service.batch_move_items(moves))
+
+        assert result["total"] == 3
+        assert result["success_count"] == 3
+        assert result["failed_count"] == 0
+
+        # Verifica que os arquivos agora existem no destino e não na origem
+        for i in range(1, 4):
+            assert os.path.exists(os.path.join(temp_vault, "Projects", f"Nota{i}.md"))
+            assert not os.path.exists(os.path.join(temp_vault, "Inbox", f"Nota{i}.md"))
+
+        # Garante que o push foi chamado apenas UMA vez para todo o lote!
+        service.push.assert_called_once_with("Maeve: Movimentação em lote de 3 notas")
+        print("[OK] test_obsidian_service_batch_move_atomic_git PASSOU")
+    finally:
+        shutil.rmtree(temp_vault, ignore_errors=True)
+
 if __name__ == "__main__":
     test_obsidian_path_traversal_blocked()
     test_ticktick_date_normalization()
@@ -215,4 +278,6 @@ if __name__ == "__main__":
     test_selective_rag_skipping()
     test_extract_text_from_message_handling()
     test_telegram_markdown_formatting()
+    test_semantic_chunking_and_pacing_integrity()
+    test_obsidian_service_batch_move_atomic_git()
     print("\n>>> TODOS OS TESTES DE REGRESSAO PASSARAM COM SUCESSO! <<<")
