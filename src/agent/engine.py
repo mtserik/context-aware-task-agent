@@ -19,7 +19,7 @@ except ImportError:
     _ANTHROPIC_AVAILABLE = False
 
 from src.agent.state import AgentState, IntentDomain
-from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE, get_system_prompt, get_system_prompt_parts
+from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE, get_system_prompt, get_system_prompt_parts, get_planner_prompt_parts
 from src.services.registry import get_vector_db_service
 from src.domain.tasks import normalize_ticktick_date
 from src.domain.temporal import resolve_temporal_context
@@ -294,11 +294,19 @@ class MaeveAgent:
         workflow = StateGraph(AgentState)
 
         workflow.add_node("router", self._router_node)
+        workflow.add_node("planner", self._planner_node)
         workflow.add_node("call_model", self._call_model_node)
         workflow.add_node("tools", tool_node)
 
         workflow.set_entry_point("router")
-        workflow.add_edge("router", "call_model")
+
+        # Roteamento condicional: se a tarefa exigir planejamento estratégico (Sonnet), vai para planner.
+        # Caso contrário, vai direto para execução operacional (Luna).
+        workflow.add_conditional_edges(
+            "router",
+            lambda x: "planner" if (x.get("routing_metadata") or {}).get("plan_required") else "call_model"
+        )
+        workflow.add_edge("planner", "call_model")
 
         workflow.add_conditional_edges(
             "call_model",
@@ -310,15 +318,17 @@ class MaeveAgent:
 
     async def _router_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Classifica a intenção (domínio) e complexidade do pedido considerando o contexto conversacional recente.
-        Preenche AgentState.current_intent e AgentState.routing_metadata.
+        Classifica a intenção (domínio), complexidade do pedido e necessidade de planejamento estratégico (Sonnet)
+        considerando o contexto conversacional recente.
+        Preenche AgentState.current_intent, AgentState.routing_metadata e reseta AgentState.plan.
         """
         messages = state.get('messages', [])
         last_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
         if not last_msg:
             return {
                 "current_intent": "chat",
-                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "chat", "reason": "No human message"}
+                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "chat", "reason": "No human message", "plan_required": False},
+                "plan": None,
             }
 
         text_clean = str(last_msg.content).strip().lower()
@@ -349,32 +359,38 @@ class MaeveAgent:
                         "complexity": 1,
                         "model": "fast",
                         "domain": "knowledge",
-                        "reason": "Escrita operacional de nota no Obsidian a partir de contexto prévio (Luna)"
-                    }
+                        "reason": "Escrita operacional de nota no Obsidian a partir de contexto prévio (Luna)",
+                        "plan_required": False,
+                    },
+                    "plan": None,
                 }
             # Assistente acabou de propor criar/atualizar tarefa no TickTick
             if any(k in ai_text for k in ["tarefa", "task", "ticktick", "agendar", "backlog", "time-blocking"]):
-                logger.info("[Router Contextual]: Confirmação para ação de Tarefa detectada -> TASKS / FAST")
+                logger.info("[Router Contextual]: Confirmação para ação de Tarefa detectada -> TASKS / FAST (Luna)")
                 return {
                     "current_intent": "tasks",
                     "routing_metadata": {
                         "complexity": 1,
                         "model": "fast",
                         "domain": "tasks",
-                        "reason": "Confirmação contextual do usuário para tarefa no TickTick"
-                    }
+                        "reason": "Confirmação contextual do usuário para tarefa no TickTick",
+                        "plan_required": False,
+                    },
+                    "plan": None,
                 }
             # Assistente acabou de propor agendar lembrete
             if any(k in ai_text for k in ["lembrete", "lembrar", "notificar"]):
-                logger.info("[Router Contextual]: Confirmação para ação de Lembrete detectada -> REMINDERS / FAST")
+                logger.info("[Router Contextual]: Confirmação para ação de Lembrete detectada -> REMINDERS / FAST (Luna)")
                 return {
                     "current_intent": "reminders",
                     "routing_metadata": {
                         "complexity": 1,
                         "model": "fast",
                         "domain": "reminders",
-                        "reason": "Confirmação contextual do usuário para agendar lembrete"
-                    }
+                        "reason": "Confirmação contextual do usuário para agendar lembrete",
+                        "plan_required": False,
+                    },
+                    "plan": None,
                 }
 
         # 2. Heurística Fast-Path: O(1) para saudações e acks isolados
@@ -390,8 +406,10 @@ class MaeveAgent:
                     "complexity": 1,
                     "model": "fast",
                     "domain": "chat",
-                    "reason": "Heuristic fast-path: trivial query/greeting"
-                }
+                    "reason": "Heuristic fast-path: trivial query/greeting",
+                    "plan_required": False,
+                },
+                "plan": None,
             }
 
         # 3. LLM Router com Injeção de Contexto Recente (resolve ambiguidades e pronomes "isso", "aquilo")
@@ -406,7 +424,8 @@ class MaeveAgent:
             "complexity": int (1 a 5),
             "model": "fast" | "smart",
             "domain": "tasks" | "knowledge" | "search" | "reminders" | "chat" | "general",
-            "reason": "string curta"
+            "reason": "string curta",
+            "plan_required": true | false
         }}
 
         Diretrizes de Domínio:
@@ -417,9 +436,18 @@ class MaeveAgent:
         - chat: Conversas reflexivas, saudações, bate-papo sem necessidade de ferramentas.
         - general: Pedidos híbridos que misturam múltiplos domínios ou continuam ações anteriores.
 
-        Diretrizes de Complexidade & Escolha de Modelo:
-        - 1-2 (fast / Luna): Comandos diretos, escrita e criação operacional de notas no Obsidian (salvar ideias, notas rápidas, mover arquivos), gerenciamento de tarefas no TickTick, lembretes, saudações e listagens.
-        - 3-5 (smart / Sonnet): Raciocínio conceitual profundo, debates teóricos de arquitetura/engenharia/ciência de dados, planejamento estratégico denso, análises estatísticas complexas e consolidação de múltiplos conceitos novos.
+        Diretrizes de Complexidade & Planejamento Estratégico (Planner vs Executor):
+        - plan_required = false (Execução Operacional Direta via Luna):
+          * Operações diretas com ferramentas: criar tarefas pontuais ou em lote no TickTick, listar tarefas, concluir tarefas.
+          * Operações no Obsidian: criar notas a partir de resumos/conversas, mover notas, listar notas.
+          * Consultas na Web, agendamento de lembretes, saudações e comandos objetivos.
+          * Com o TickTick MCP, a Luna é plenamente capaz de criar tarefas e projetos diretamente sem necessidade de planejamento prévio se o escopo for direto.
+        - plan_required = true (Planejamento Estratégico via Claude Sonnet -> Execução Luna):
+          * Pedidos de alta complexidade conceitual, arquitetural ou organizacional (complexity >= 3).
+          * Criação ou estruturação de novos projetos com definição de épicos, histórias, entregáveis e dimensionamento de prazos/datas.
+          * Planejamento arquitetural de software, modelagem de banco de dados ou design de sistemas.
+          * Deduções matemáticas, análise estatística avançada ou ciência de dados rigorosa.
+          * Consolidação profunda de múltiplos conceitos complexos em nova síntese.
 {recent_context}
         Pedido Atual do Usuário:
         "{last_msg.content}"
@@ -437,30 +465,114 @@ class MaeveAgent:
                 decision = json.loads(clean_json)
 
             if not isinstance(decision, dict) or "model" not in decision:
-                decision = {"complexity": 1, "model": "fast", "domain": "general", "reason": "Formato não-padrão"}
+                decision = {"complexity": 1, "model": "fast", "domain": "general", "reason": "Formato não-padrão", "plan_required": False}
 
             domain: IntentDomain = decision.get("domain", "general")
-            print(f"[Router]: Complexidade {decision.get('complexity', 1)} | Domínio: {domain.upper()} -> {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
+            plan_required = bool(decision.get("plan_required", False))
+            # Se complexidade >= 3 e não for uma simples confirmação, exige planejamento estratégico
+            if decision.get("complexity", 1) >= 3 and not is_confirmation:
+                plan_required = True
+            decision["plan_required"] = plan_required
+
+            print(f"[Router]: Complexidade {decision.get('complexity', 1)} | Domínio: {domain.upper()} | Plan Required: {plan_required} -> {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
 
             return {
                 "current_intent": domain,
-                "routing_metadata": decision
+                "routing_metadata": decision,
+                "plan": None,
             }
         except Exception as e:
             print(f"[Router Warning]: Erro no Router: {e}. Defaulting to Fast/General.")
             return {
                 "current_intent": "general",
-                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "general", "reason": "Fallback due to error"}
+                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "general", "reason": "Fallback due to error", "plan_required": False},
+                "plan": None,
             }
+
+    async def _planner_node(self, state: AgentState) -> Dict[str, Any]:
+        """
+        Nó de Planejamento Estratégico (Claude Sonnet 5 — Staff Brain).
+        Responsabilidade Única: Raciocinar, conceber, planejar e estruturar a solução
+        sem chamada de ferramentas nem poluição de tokens operacionais.
+        O plano estruturado é repassado ao nó 'call_model' (Luna) para execução física.
+        """
+        messages = state.get("messages", [])
+        final_messages = _sanitize_message_history(messages, limit=20)
+        user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
+        user_query = user_msg.content if user_msg else ""
+
+        # Contexto do Obsidian (se relevante para o planejamento conceitual)
+        current_intent = state.get("current_intent") or "general"
+        should_search_rag = bool(user_query) and current_intent in ["knowledge", "general"]
+        context_docs = await self._vector_db.search_context(user_query, limit=3) if should_search_rag else []
+        context_str = "\n".join([
+            f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:800]}" for doc in context_docs
+        ])
+
+        temporal = _resolve_temporal_context()
+        static_prompt, dynamic_prompt = get_planner_prompt_parts(
+            date=temporal["date"],
+            time=temporal["time"],
+            day_of_week=temporal["day_of_week"],
+            period=temporal["period"],
+            timezone=temporal.get("timezone", "America/Sao_Paulo"),
+            obsidian_context=context_str or "[Nenhuma nota prévia diretamente relacionada]",
+        )
+
+        is_anthropic = (
+            (isinstance(self.smart_model_base, ChatAnthropic) if _ANTHROPIC_AVAILABLE else False)
+            or "claude" in getattr(self.smart_model_base, "model_name", "").lower()
+            or "claude" in getattr(self.smart_model_base, "model", "").lower()
+        )
+
+        if is_anthropic:
+            system_message = SystemMessage(
+                content=[
+                    {
+                        "type": "text",
+                        "text": static_prompt,
+                        "cache_control": {"type": "ephemeral"}
+                    },
+                    {
+                        "type": "text",
+                        "text": dynamic_prompt
+                    }
+                ]
+            )
+        else:
+            system_message = SystemMessage(content=f"{static_prompt}\n\n{dynamic_prompt}")
+
+        history = [m for m in final_messages if not isinstance(m, SystemMessage)]
+        if is_anthropic and len(history) >= 2:
+            history = _apply_anthropic_history_cache(history)
+
+        prompt_messages = [system_message] + history
+
+        try:
+            logger.info("🧠 [Planner Node]: Invocando Cérebro Estratégico (Sonnet)...")
+            response = await self.smart_model_base.ainvoke(prompt_messages)
+            plan_text = extract_text_from_message(response).strip()
+            logger.info("✅ [Planner Node]: Plano estratégico gerado com sucesso (%d caracteres).", len(plan_text))
+            return {"plan": plan_text}
+        except Exception as e:
+            logger.error("❌ Erro no Planner Node: %s. Prosseguindo sem plano prévio...", e)
+            return {"plan": None}
 
     async def _call_model_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Executa a inferência aplicando Dynamic Tool Binding e Anthropic Prompt Caching (90% desconto de tokens).
+        Executa a inferência operacional aplicando Dynamic Tool Binding e Anthropic Prompt Caching (90% desconto de tokens).
+        Arquitetura Planner-Executor: O executor físico de ferramentas é SEMPRE o fast_model_base (GPT-5.6 Luna).
         """
         routing = state.get("routing_metadata") or {"model": "fast", "domain": "general"}
         current_intent = state.get("current_intent") or routing.get("domain", "general")
 
-        base_model = self.smart_model_base if routing.get("model") == "smart" else self.fast_model_base
+        # Arquitetura Planner-Executor: O executor operacional é SEMPRE o fast_model_base (GPT-5.6 Luna)
+        # O Sonnet (smart_model_base) atua exclusivamente como Planner no nó 'planner'
+        if os.getenv("MAEVE_ALWAYS_USE_SMART_FOR_EXECUTION", "false").lower() == "true":
+            base_model = self.smart_model_base
+        else:
+            base_model = self.fast_model_base
+
         is_anthropic = (
             (isinstance(base_model, ChatAnthropic) if _ANTHROPIC_AVAILABLE else False)
             or "claude" in getattr(base_model, "model_name", "").lower()
@@ -503,9 +615,28 @@ class MaeveAgent:
             f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs
         ])
 
-        # 5. Compilação de Contexto Temporal e System Prompt (Persona Dinâmica Assimétrica + Prompt Caching)
+        # 5. Compilação de Contexto Temporal e System Prompt (Persona Dinâmica Assimétrica + Injeção de Plano)
+        plan = state.get("plan")
+        plan_directive = ""
+        if plan:
+            plan_directive = (
+                "\n\n# PLANO ESTRATÉGICO DA STAFF (CLAUDE SONNET):\n"
+                "O cérebro estratégico (Sonnet) analisou a solicitação e elaborou o seguinte plano de ação estruturado:\n"
+                f"{plan}\n\n"
+                "## DIRETRIZES MANDATÓRIAS DE EXECUÇÃO:\n"
+                "1. Sua missão é colocar esse plano em prática de forma autônoma e silenciosa.\n"
+                "2. Se o plano determinar ações em ferramentas (criar projeto no TickTick, criar tarefas/subtarefas em lote, "
+                "criar notas no Obsidian com LaTeX MathJax, buscar na web, etc.), execute as ferramentas necessárias silenciosamente.\n"
+                "3. Para criação de múltiplas tarefas no TickTick, utilize preferencialmente a ferramenta 'batch_create_ticktick_tasks'.\n"
+                "4. Se o plano prescrever a criação de um projeto no TickTick seguido de tarefas, primeiro crie o projeto via 'create_ticktick_project' "
+                "para obter o ID do projeto e em seguida adicione as tarefas associadas a ele.\n"
+                "5. Após a execução física das ferramentas (ou se o pedido for puramente conceitual/explicativo), "
+                "entregue ao Erik uma resposta final amigável, clara e concisa em 1 a 3 parágrafos no tom de dev peer brasileira da Maeve, "
+                "confirmando o que foi realizado ou apresentando os pontos-chave sem expor o monólogo interno."
+            )
+
         temporal = _resolve_temporal_context()
-        active_tier = routing.get("model", "fast")
+        active_tier = "fast" if base_model == self.fast_model_base else "smart"
         static_prompt, dynamic_prompt = get_system_prompt_parts(
             tier=active_tier,
             date=temporal["date"],
@@ -517,6 +648,9 @@ class MaeveAgent:
             chat_id=chat_id,
             obsidian_context=context_str,
         )
+
+        if plan_directive:
+            dynamic_prompt += plan_directive
 
         if is_anthropic:
             # Anthropic Prompt Caching: Estrutura o SystemMessage em blocos com cache_control no bloco estático (>1024 tokens)
@@ -575,7 +709,7 @@ class MaeveAgent:
             if "400" in err_msg:
                 last_human = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)
                 fallback_history = [last_human] if last_human else []
-                return {"messages": [await base_model.ainvoke([SystemMessage(content=system_content)] + fallback_history)]}
+                return {"messages": [await base_model.ainvoke([system_message] + fallback_history)]}
             raise e
 
     async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):

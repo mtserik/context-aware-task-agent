@@ -47,8 +47,18 @@ async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
 
 @tool
 async def create_ticktick_project(name: str, color: str = None, view_mode: str = "list"):
-    """Cria um novo projeto (lista) no TickTick via API REST."""
+    """Cria um novo projeto (lista) no TickTick. Prefere MCP com fallback para REST."""
     result = await _task_domain.create_project(name=name, color=color, view_mode=view_mode)
+    return result.to_agent_message()
+
+@tool
+async def batch_create_ticktick_tasks(tasks: List[Dict[str, Any]]):
+    """
+    Cria múltiplas tarefas ou subtarefas no TickTick em lote via MCP em uma única chamada.
+    Use sempre que precisar criar listas de tarefas, projetos com histórias/entregáveis ou planos de ação.
+    Cada item na lista DEVE ser um dicionário: {"title": "...", "content": "...", "due_date": "...", "priority": 0, "project_id": "...", "parent_id": "..."}
+    """
+    result = await _task_domain.batch_create_tasks(tasks)
     return result.to_agent_message()
 
 @tool
@@ -98,12 +108,6 @@ async def verify_task_creation(task_id: str):
 async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
     """Obtém métricas via MCP (habits, focus_records, tasks_completed)."""
     result = await _task_domain.get_metrics(query_type=query_type, start_date=start_date)
-    return result.to_agent_message()
-
-@tool
-async def batch_create_ticktick_tasks(tasks_list: List[Dict[str, Any]]):
-    """Cria múltiplas tarefas em lote no TickTick."""
-    result = await _task_domain.batch_create_tasks(tasks_list=tasks_list)
     return result.to_agent_message()
 
 TASK_TOOLS = [

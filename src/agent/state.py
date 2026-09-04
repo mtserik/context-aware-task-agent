@@ -9,5 +9,7 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     # Rastreia o domínio semântico ativo para Dynamic Tool Binding
     current_intent: Optional[IntentDomain]
-    # Armazena decisões de roteamento (modelo escolhido, complexidade, domínio, motivo)
+    # Armazena decisões de roteamento (modelo escolhido, complexidade, domínio, motivo, plan_required)
     routing_metadata: Optional[Dict[str, Any]]
+    # Plano estratégico elaborado pelo modelo Smart (Sonnet) para execução operacional pelo Luna
+    plan: Optional[str]

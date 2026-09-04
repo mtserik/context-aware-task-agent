@@ -719,4 +719,68 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
 - Suíte completa de testes de domínio (`test_domain_services.py`): 12/12 aprovados.
 - Suíte completa de testes de regressão (`test_bugfixes_regression.py`): 13/13 aprovados.
 - Suíte de autenticação MCP (`test_mcp_auth.py`): 11/11 aprovados.
-- Teste diagnóstico (`test_note_fast.py`): confirmada escrita de nota roteando para `fast` (Luna) com `create_obsidian_note` vinculado.
+- Teste diagnóstico (`test_note_fast.py`): confirmada escrita de nota roteando para `fast` (Luna) com `create_obsidian_note` vinculado.
+
+---
+
+### 9.6 Sprint 16: TickTick MCP-First & Arquitetura Planner (Sonnet) -> Executor (Luna) (2026-09-04)
+
+> **Objetivo:** Priorizar o servidor MCP Oficial do TickTick com fallback transparente para a API REST e desacoplar o raciocínio estratégico da execução física através da arquitetura Planner (Claude Sonnet) -> Executor (GPT-5.6 Luna), reduzindo em ~95% os custos de inferência sem perda de capacidade cognitiva.
+
+#### 1. Integração TickTick MCP-First com Fallback REST
+- **Mapeamento de Ferramentas Oficiais MCP (`src/services/ticktick.py`):**
+  - `create_project(name, color, view_mode)`: invoca MCP tool `create_project` com fallback para `POST /project`.
+  - `create_task(...)`: invoca MCP tool `create_task` com payload aninhado `{"task": {...}}` e fallback para `POST /task`.
+  - `batch_add_tasks(tasks)`: invoca MCP tool `batch_add_tasks` com `{"tasks": [...]}` recebendo `id2etag` em lote.
+  - `update_task(...)`: invoca MCP tool `update_task` com fallback REST.
+  - `batch_update_tasks(...)`: invoca MCP tool `batch_update_tasks` com fallback sequencial controlado.
+  - `delete_task(project_id, task_id)`: invoca MCP tool `delete_task` com fallback REST.
+  - `complete_task(project_id, task_id)`: invoca MCP tool `complete_task` com fallback para `update_task(status=2)`.
+- **Evolução do Domínio & Ferramentas LangGraph:**
+  - `TaskDomainService.batch_create_tasks` adicionado em `src/domain/tasks.py` com normalização de datas ISO e Time-Blocking (-0300).
+  - `@tool batch_create_ticktick_tasks` adicionado em `src/agent/tools/task_tools.py` e registrado em `TASK_TOOLS`.
+  - Suporte resiliente a `TICKTICK_MCP_TOKEN` e `TICKTICK_MP_TOKEN` com endpoint `https://mcp.ticktick.com`.
+
+#### 2. Arquitetura Planner (Sonnet) -> Executor (Luna)
+- **Desacoplamento de Ferramentas & Eliminação de Loops Caros no Sonnet:**
+  - Anteriormente, o Sonnet (`claude-sonnet-5`, $3/M in, $15/M out) recebia as 10+ ferramentas ativas e realizava loops ReAct operacionais sucessivos, gerando consumo astronômico de tokens de saída.
+  - Agora, o Sonnet é **100% isolado de ferramentas operacionais**. Atua exclusivamente no nó `planner` como o **Cérebro Estratégico (Staff Brain)**.
+- **Topologia do Grafo no LangGraph (`src/agent/engine.py`):**
+  ```text
+           [router]
+          /        \
+  (plan_required)   (not plan_required)
+        /            \
+   [planner]          |
+        \            /
+         v          v
+        [call_model] (Luna com active_tools)
+          |       ^
+   (tem tool calls) (tools concluídas)
+          v       |
+       [tools] ---+
+          |
+     (sem tool calls)
+          v
+        [END]
+  ```
+- **Nó `planner` (Claude Sonnet 5):**
+  - Raciocina profundamente sobre pedidos complexos (complexidade >= 3, desenho de projetos, épicos, histórias, modelagem e decisões matemáticas).
+  - Gera plano estruturado e o salva no campo `plan: Optional[str]` do `AgentState`.
+  - Não executa chamadas de ferramentas nem interage diretamente com o usuário neste turno.
+- **Nó `call_model` (GPT-5.6 Luna):**
+  - O executor operacional é SEMPRE o `fast_model_base` (Luna, $0.15/$0.60 por milhão — 25x mais barato).
+  - Se `plan` estiver presente no estado, injeta as diretrizes de execução e o plano estruturado no system message dinâmico.
+  - Executa as ferramentas ativas (TickTick MCP, Obsidian, etc.) silenciosamente via loop `call_model -> tools -> call_model`.
+  - Ao concluir, emite resposta humanizada, elegante e concisa em 1 a 3 parágrafos para o Telegram.
+- **Roteador com Limpeza de Estado (`_router_node`):**
+  - Classifica a necessidade de planejamento (`plan_required: bool`).
+  - Reseta `plan: None` a cada novo turno humano para evitar vazamento de planos de turnos anteriores.
+  - Operações diretas (mesmo criação de tarefas em lote no TickTick ou notas rápidas) rodam direto no Luna com `plan_required: False`.
+
+#### 3. Verificação & Qualidade
+- Suíte completa de testes de domínio (`test_domain_services.py`): 12/12 aprovados.
+- Suíte completa de testes de regressão (`test_bugfixes_regression.py`): 13/13 aprovados.
+- Topologia do grafo (`test_graph_topology.py`): 5 nós confirmados (`router`, `planner`, `call_model`, `tools`).
+- Fluxo ponta a ponta (`test_full_graph_flow.py`): mock validado com transferência de plano do Sonnet para injeção no Luna.
+- Teste real de planejamento (`test_planner_executor.py`): roteamento e geração de plano estruturado aprovados.

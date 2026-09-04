@@ -74,6 +74,59 @@ class TaskDomainService:
                 task_id=None
             )
 
+    async def batch_create_tasks(self, tasks: List[Dict[str, Any]]) -> TaskResult:
+        """
+        Cria múltiplas tarefas ou subtarefas no TickTick em lote (MCP-first com fallback).
+        """
+        try:
+            normalized = []
+            for t in tasks:
+                item = t.copy()
+                if "project_id" in item:
+                    item["projectId"] = item.pop("project_id")
+                if "due_date" in item:
+                    item["dueDate"] = normalize_ticktick_date(item.pop("due_date"))
+                if "start_date" in item:
+                    item["startDate"] = normalize_ticktick_date(item.pop("start_date"))
+                if "parent_id" in item:
+                    item["parentId"] = item.pop("parent_id")
+                normalized.append(item)
+
+            results = await self.ticktick.batch_add_tasks(normalized)
+            successes = [r for r in results if r.get("status") == 200]
+            msg = f"Criadas {len(successes)} de {len(normalized)} tarefas no TickTick."
+            return TaskResult(
+                success=len(successes) > 0,
+                message=f"✅ {msg}" if len(successes) == len(normalized) else f"⚠️ {msg}",
+                data=results
+            )
+        except Exception as e:
+            return TaskResult(
+                success=False,
+                message=f"Erro ao criar tarefas em lote: {str(e)}",
+                data=None
+            )
+
+    async def create_project(self, name: str, color: Optional[str] = None, view_mode: str = "list") -> TaskResult:
+        """
+        Cria um novo projeto (lista) no TickTick. Prefere MCP com fallback REST.
+        """
+        try:
+            res = await self.ticktick.create_project(name=name, color=color, view_mode=view_mode)
+            p_id = res.get("id") or res.get("project_id")
+            return TaskResult(
+                success=True,
+                message=f"Projeto '{name}' criado com sucesso (ID: {p_id}).",
+                task_id=p_id,
+                data=res
+            )
+        except Exception as e:
+            return TaskResult(
+                success=False,
+                message=f"Erro ao criar projeto: {str(e)}",
+                task_id=None
+            )
+
     async def batch_update_tasks(self, tasks_to_update: List[Dict[str, Any]]) -> TaskResult:
         """
         Atualiza múltiplas tarefas no TickTick com normalização de Time-Blocking e throttle.
