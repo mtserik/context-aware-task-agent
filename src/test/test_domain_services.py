@@ -118,6 +118,37 @@ def test_multi_provider_model_factory():
     print("[OK] test_multi_provider_model_factory PASSOU")
 
 
+def test_temporal_context_and_timezone_handling():
+    """Valida se a resolução temporal respeita estritamente o fuso de Brasília (America/Sao_Paulo)."""
+    from src.domain.temporal import get_local_now, resolve_temporal_context, to_local_datetime
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    # 1. Resolver contexto temporal
+    ctx = resolve_temporal_context()
+    assert "date" in ctx
+    assert "time" in ctx
+    assert "period" in ctx
+    assert "day_of_week" in ctx
+    assert ctx["timezone"] == "America/Sao_Paulo"
+    assert ctx["utc_offset"] == "-0300"
+
+    # 2. Conversão de UTC para Local
+    utc_dt = datetime(2026, 9, 4, 15, 30, tzinfo=timezone.utc)
+    local_dt = to_local_datetime(utc_dt)
+    assert local_dt.hour == 12
+    assert local_dt.minute == 30
+    assert local_dt.strftime('%z') == "-0300"
+
+    # 3. Conversão de Naive (assumindo UTC) para Local
+    naive_dt = datetime(2026, 9, 4, 15, 30)
+    local_from_naive = to_local_datetime(naive_dt)
+    assert local_from_naive.hour == 12
+    assert local_from_naive.minute == 30
+
+    print("[OK] test_temporal_context_and_timezone_handling PASSOU")
+
+
 if __name__ == "__main__":
     test_dynamic_tool_binding_subsets()
     test_task_domain_parent_project_inheritance()
@@ -125,4 +156,5 @@ if __name__ == "__main__":
     test_knowledge_domain_note_creation()
     test_fastapi_endpoints_health()
     test_multi_provider_model_factory()
+    test_temporal_context_and_timezone_handling()
     print("\n>>> TODOS OS TESTES UNITARIOS DE DOMINIO PASSARAM! <<<")

@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any
 
 from src.domain.models import ReminderResult
 from src.domain.tasks import normalize_ticktick_date
+from src.domain.temporal import to_local_datetime
 from src.services.registry import get_database_service
 from src.services.database import DatabaseService
 
@@ -48,7 +49,7 @@ class ReminderDomainService:
             return ReminderResult(success=False, message=f"Erro ao agendar lembrete: {str(e)}")
 
     async def list_active_reminders(self, user_id: Optional[str] = None) -> ReminderResult:
-        """Lista lembretes pendentes do usuário."""
+        """Lista lembretes pendentes do usuário convertendo timestamps para o fuso local."""
         try:
             fallback_id = os.getenv("TELEGRAM_ALLOWED_USER_ID") or "default_user"
             effective_user = user_id if (user_id and user_id != "unknown") else fallback_id
@@ -56,9 +57,18 @@ class ReminderDomainService:
             if not reminders:
                 return ReminderResult(success=True, message="Você não tem lembretes ativos.", data=[])
 
-            formatted = "Lembretes ativos:\n" + "\n".join([
-                f"- {r[0]} em {r[1].strftime('%d/%m %H:%M')}" for r in reminders
-            ])
+            lines = []
+            for r in reminders:
+                content = r[0]
+                dt = r[1]
+                try:
+                    local_dt = to_local_datetime(dt) if dt else None
+                    formatted_time = local_dt.strftime('%d/%m %H:%M') if local_dt else "data indefinida"
+                except Exception:
+                    formatted_time = dt.strftime('%d/%m %H:%M') if hasattr(dt, 'strftime') else str(dt)
+                lines.append(f"- {content} em {formatted_time}")
+
+            formatted = "Lembretes ativos:\n" + "\n".join(lines)
             return ReminderResult(success=True, message=formatted, data=reminders)
         except Exception as e:
             return ReminderResult(success=False, message=f"Erro ao listar lembretes: {str(e)}")

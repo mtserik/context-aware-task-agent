@@ -21,3 +21,4 @@ pypdf==6.12.2
 tavily-python==0.7.24
 rich==15.0.0
 prompt_toolkit==3.0.52
+tzdata==2026.2

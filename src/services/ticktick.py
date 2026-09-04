@@ -4,6 +4,7 @@ import json
 import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
+from src.domain.temporal import get_local_now
 
 class TickTickService:
     """
@@ -415,8 +416,9 @@ class TickTickService:
     async def get_focus_records(self, start_date: Optional[str] = None) -> str:
         """Obtém registros de foco (Pomo) via MCP."""
         # 'get_focuses_by_time' espera startDate e endDate em formato ISO
-        start = start_date or datetime.now().strftime('%Y-%m-01T00:00:00Z')
-        end = datetime.now().strftime('%Y-%m-%dT23:59:59Z')
+        now = get_local_now()
+        start = start_date or now.strftime('%Y-%m-01T00:00:00Z')
+        end = now.strftime('%Y-%m-%dT23:59:59Z')
         result = await self._call_mcp_tool("tools/call", {
             "name": "get_focuses_by_time",
             "arguments": {"startDate": start, "endDate": end}
@@ -426,9 +428,10 @@ class TickTickService:
     async def get_completed_tasks_history(self, start_date: Optional[str] = None) -> str:
         """Obtém histórico de tarefas concluídas via MCP."""
         # 'list_completed_tasks_by_date' exige 'search' com 'startDate' e 'endDate'
-        start = start_date or datetime.now().strftime('%Y-%m-01T00:00:00Z')
+        now = get_local_now()
+        start = start_date or now.strftime('%Y-%m-01T00:00:00Z')
         if "T" not in start: start += "T00:00:00Z"
-        end = datetime.now().strftime('%Y-%m-%dT23:59:59Z')
+        end = now.strftime('%Y-%m-%dT23:59:59Z')
         
         result = await self._call_mcp_tool("tools/call", {
             "name": "list_completed_tasks_by_date",

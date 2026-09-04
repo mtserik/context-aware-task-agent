@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from src.services.ticktick import TickTickService
 from datetime import datetime
+from src.domain.temporal import get_local_now
 
 load_dotenv()
 
@@ -13,7 +14,7 @@ async def debug_ticktick_tasks():
         tasks = await service.get_tasks()
         print(f"📊 Total de tarefas encontradas: {len(tasks)}")
         
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        today_str = get_local_now().strftime('%Y-%m-%d')
         print(f"📅 Data de hoje para o filtro: {today_str}")
         
         for i, task in enumerate(tasks[:10]): # Mostra as 10 primeiras

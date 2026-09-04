@@ -22,6 +22,7 @@ from src.agent.state import AgentState, IntentDomain
 from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE
 from src.services.registry import get_vector_db_service
 from src.domain.tasks import normalize_ticktick_date
+from src.domain.temporal import resolve_temporal_context
 from src.agent.tools import (
     ALL_TOOLS,
     TASK_TOOLS,
@@ -105,27 +106,8 @@ def _sanitize_message_history(raw_messages: List[BaseMessage], limit: int = 20) 
 
     return final_messages
 
-def _resolve_temporal_context() -> Dict[str, str]:
-    """Resolve os metadados temporais contextuais (fuso horário local)."""
-    now_dt = datetime.now()
-    dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
-    hour = now_dt.hour
-
-    if 5 <= hour < 12:
-        period = "manhã"
-    elif 12 <= hour < 18:
-        period = "tarde"
-    elif 18 <= hour < 24:
-        period = "noite"
-    else:
-        period = "madrugada"
-
-    return {
-        "date": now_dt.strftime('%d/%m/%Y'),
-        "time": now_dt.strftime('%H:%M'),
-        "day_of_week": dias[now_dt.weekday()],
-        "period": period,
-    }
+# Resolução temporal ciente de fuso horário (America/Sao_Paulo)
+_resolve_temporal_context = resolve_temporal_context
 
 
 def create_chat_model(
@@ -330,6 +312,7 @@ class MaeveAgent:
             time=temporal["time"],
             day_of_week=temporal["day_of_week"],
             period=temporal["period"],
+            timezone=temporal.get("timezone", "America/Sao_Paulo"),
             user_id=user_id,
             chat_id=chat_id,
             obsidian_context=context_str
