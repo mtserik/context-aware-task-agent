@@ -92,3 +92,13 @@ class VectorDBService:
         except Exception as e:
             print(f"⚠️ [VectorDB] Falha ao consultar contexto: {e}")
             return []
+
+    async def close(self):
+        """Fecha a conexão do cliente Qdrant de forma segura."""
+        if self.client:
+            try:
+                await self.client.close()
+            except Exception as e:
+                print(f"⚠️ [VectorDB] Erro ao fechar cliente Qdrant: {e}")
+            finally:
+                self.client = None

@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timedelta
 import httpx
 import yaml
@@ -10,22 +11,24 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from src.agent.state import AgentState
-from src.services.vector_db import VectorDBService
-from src.services.ticktick import TickTickService
-from src.services.obsidian import ObsidianService
-from src.services.database import DatabaseService
-from src.services.search import SearchService
+from src.services.registry import (
+    get_ticktick_service,
+    get_obsidian_service,
+    get_vector_db_service,
+    get_database_service,
+    get_search_service
+)
 from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Inicialização dos Serviços ---
-ticktick = TickTickService()
-obsidian = ObsidianService()
-vector_db = VectorDBService()
-db_service = DatabaseService()
-search_service = SearchService()
+# --- Inicialização dos Serviços via Registry ---
+ticktick = get_ticktick_service()
+obsidian = get_obsidian_service()
+vector_db = get_vector_db_service()
+db_service = get_database_service()
+search_service = get_search_service()
 
 # --- Ferramentas Obsidian ---
 
@@ -318,22 +321,30 @@ async def batch_create_ticktick_tasks(tasks_list: List[Dict[str, Any]]):
 # --- Ferramentas de Lembrete ---
 
 @tool
-async def set_reminder(content: str, reminder_at: str, user_id: str, chat_id: str):
+async def set_reminder(content: str, reminder_at: str, user_id: str = None, chat_id: str = None):
     """
     Agenda um lembrete customizado.
-    reminder_at: Formato ISO 'YYYY-MM-DDTHH:MM:SS-0300'.
+    reminder_at: Formato ISO 'YYYY-MM-DDTHH:MM:SS-0300' ou 'YYYY-MM-DD'.
+    user_id e chat_id são opcionais e detectados automaticamente se omitidos.
     """
     try:
-        reminder_id = await db_service.create_reminder(user_id, chat_id, content, reminder_at)
+        fallback_id = os.getenv("TELEGRAM_ALLOWED_USER_ID") or "default_user"
+        effective_user = user_id if (user_id and user_id != "unknown") else fallback_id
+        effective_chat = chat_id if (chat_id and chat_id != "unknown") else fallback_id
+        
+        normalized_time = _normalize_ticktick_date(reminder_at)
+        reminder_id = await db_service.create_reminder(effective_user, effective_chat, content, normalized_time)
         return f"✅ Lembrete agendado com sucesso! [ID: {reminder_id}]"
     except Exception as e:
         return f"❌ Erro ao agendar lembrete: {str(e)}"
 
 @tool
-async def list_active_reminders(user_id: str):
+async def list_active_reminders(user_id: str = None):
     """Lista todos os lembretes pendentes do usuário."""
     try:
-        reminders = await db_service.list_user_reminders(user_id)
+        fallback_id = os.getenv("TELEGRAM_ALLOWED_USER_ID") or "default_user"
+        effective_user = user_id if (user_id and user_id != "unknown") else fallback_id
+        reminders = await db_service.list_user_reminders(effective_user)
         if not reminders: return "Você não tem lembretes ativos."
         return "Lembretes ativos:\n" + "\n".join([f"- {r[0]} em {r[1].strftime('%d/%m %H:%M')}" for r in reminders])
     except Exception as e:
@@ -439,6 +450,13 @@ class MaeveAgent:
         if not last_msg:
             return {"routing_metadata": {"model": "fast", "reason": "No human message"}}
 
+        # Heurística Fast-Path: Economiza latência (~300-500ms) e tokens para saudações e mensagens curtas
+        text_clean = str(last_msg.content).strip().lower()
+        simple_patterns = r"^(oi|olá|ola|bom dia|boa tarde|boa noite|valeu|obrigado|ok|beleza|show|tchau|obg|sim|não|nao)[\.\!\?]*$"
+        if len(text_clean) <= 20 or re.match(simple_patterns, text_clean):
+            print(f"[Router Fast-Path]: Mensagem simples ('{text_clean[:30]}') -> Usando FAST sem chamar LLM.")
+            return {"routing_metadata": {"complexity": 1, "model": "fast", "reason": "Heuristic fast-path: trivial query/greeting"}}
+
         # Prompt rápido para classificação
         routing_prompt = f"""
         Analise o pedido abaixo e classifique a complexidade de 1 a 5:
@@ -453,14 +471,23 @@ class MaeveAgent:
         try:
             # Reutiliza a instância dedicada de router_model (sem recriar a cada mensagem)
             raw_decision = await self.router_model.ainvoke(routing_prompt, config={"tags": ["router_llm"]})
-            # Limpeza básica do JSON caso o modelo retorne Markdown
-            clean_json = raw_decision.content.replace("```json", "").replace("```", "").strip()
-            decision = json.loads(clean_json)
+            content_str = str(raw_decision.content).strip()
             
-            print(f"🧠 [Router]: Complexidade {decision['complexity']} -> Usando {decision['model'].upper()} ({decision['reason']})")
+            # Extração robusta via Regex para evitar falhas com comentários extras do LLM
+            json_match = re.search(r"\{.*?\}", content_str, re.DOTALL)
+            if json_match:
+                decision = json.loads(json_match.group(0))
+            else:
+                clean_json = content_str.replace("```json", "").replace("```", "").strip()
+                decision = json.loads(clean_json)
+
+            if not isinstance(decision, dict) or "model" not in decision:
+                decision = {"complexity": 1, "model": "fast", "reason": "Formato não-padrão"}
+            
+            print(f"[Router]: Complexidade {decision.get('complexity', 1)} -> Usando {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
             return {"routing_metadata": decision}
         except Exception as e:
-            print(f"⚠️ Erro no Router: {e}. Defaulting to Fast.")
+            print(f"[Router Warning]: Erro no Router: {e}. Defaulting to Fast.")
             return {"routing_metadata": {"model": "fast", "reason": "Fallback due to error"}}
 
     async def _call_model_node(self, state: AgentState):
@@ -513,7 +540,21 @@ class MaeveAgent:
         chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
 
         last_query = user_msg.content if user_msg else ""
-        context_docs = await vector_db.search_context(last_query, limit=3) if last_query else []
+        
+        # P4 Optimization: Busca RAG seletiva para evitar embedding/search em mensagens triviais
+        should_search_rag = bool(last_query)
+        if should_search_rag and routing.get("complexity", 1) == 1:
+            clean_q = str(last_query).strip().lower()
+            trivial_greetings = {
+                "oi", "ola", "olá", "bom dia", "boa tarde", "boa noite",
+                "opa", "e ai", "e aí", "valeu", "obrigado", "obrigada",
+                "ok", "beleza", "blz", "tchau", "ate mais", "até mais",
+                "sim", "não", "nao", "show", "perfeito"
+            }
+            if clean_q in trivial_greetings or len(clean_q) < 4:
+                should_search_rag = False
+
+        context_docs = await vector_db.search_context(last_query, limit=3) if should_search_rag else []
         context_str = "\n".join([f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs])
         
         # Contexto Temporal

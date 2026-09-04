@@ -63,8 +63,8 @@ class TelegramService:
         temp_voice_path = None
         try:
             user_id = str(update.effective_user.id)
-            # Importação tardia para evitar circularidade
-            from src.main import db_service
+            from src.services.registry import get_database_service
+            db_service = get_database_service()
             
             # Busca a voz preferida do usuário (default: shimmer)
             voice = await db_service.get_user_preference(user_id, "tts_voice", "shimmer")
@@ -130,7 +130,8 @@ class TelegramService:
         await query.answer()
         
         try:
-            from src.main import db_service
+            from src.services.registry import get_database_service
+            db_service = get_database_service()
             await db_service.update_user_preference(user_id, "tts_voice", voice_choice)
             await query.edit_message_text(text=f"✅ Voz alterada para: *{voice_choice.capitalize()}*", parse_mode="Markdown")
         except Exception as e:
@@ -146,7 +147,8 @@ class TelegramService:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         
         try:
-            from src.main import maeve
+            from src.services.registry import get_maeve_agent
+            maeve = self.maeve or get_maeve_agent()
             if not maeve:
                 await update.message.reply_text("O motor da Maeve está aquecendo. Tente novamente em alguns segundos.")
                 return

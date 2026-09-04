@@ -5,24 +5,35 @@ from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
-from src.agent.engine import MaeveAgent, db_service
+from src.agent.engine import MaeveAgent
 from src.models.schemas import ChatRequest, ChatResponse
-from src.services.obsidian import ObsidianService
-from src.services.vector_db import VectorDBService
-from src.services.ticktick import TickTickService
-from src.services.telegram_bot import TelegramService
+from src.services.registry import (
+    get_obsidian_service,
+    get_vector_db_service,
+    get_ticktick_service,
+    get_database_service,
+    get_telegram_service,
+    set_maeve_agent,
+    shutdown_all_services
+)
 from src.services.reminder_worker import reminder_worker
 
 load_dotenv()
 
 # --- Security Setup ---
 API_KEY = os.getenv("API_KEY")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 async def get_api_key(api_key_header: str = Security(api_key_header)):
     if not API_KEY:
-        # Se não houver chave no .env, permitimos acesso apenas para desenvolvimento local
+        if ENVIRONMENT == "production":
+            raise HTTPException(
+                status_code=500, 
+                detail="Configuração insegura: API_KEY obrigatória em ambiente de produção."
+            )
+        # Permite modo dev apenas fora de produção
         return "dev-mode"
     if api_key_header == API_KEY:
         return api_key_header
@@ -33,12 +44,13 @@ from contextlib import asynccontextmanager
 # Background tasks tracking to prevent garbage collection
 background_tasks = set()
 
-# Global instances
+# Shared singletons via Registry
+obsidian_service = get_obsidian_service()
+vector_db = get_vector_db_service()
+ticktick_service = get_ticktick_service()
+db_service = get_database_service()
+telegram_bot = get_telegram_service()
 maeve = None
-obsidian_service = ObsidianService()
-vector_db = VectorDBService()
-ticktick_service = TickTickService()
-telegram_bot = TelegramService()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,10 +60,12 @@ async def lifespan(app: FastAPI):
     try:
         checkpointer = await db_service.get_checkpointer()
         maeve = MaeveAgent(checkpointer=checkpointer)
+        set_maeve_agent(maeve)
         print("✅ Maeve Agent inicializado com persistência no Supabase.")
     except Exception as e:
         print(f"⚠️ Erro ao conectar ao Supabase: {e}. Usando memória volátil.")
         maeve = MaeveAgent()
+        set_maeve_agent(maeve)
     
     # 2. Inicializa e inicia o Telegram Bot em background
     try:
@@ -72,9 +86,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
-    await telegram_bot.stop_bot()
-    await db_service.close()
+    # Shutdown limpo e centralizado de todos os serviços
+    await shutdown_all_services()
 
 # --- App Initialization ---
 app = FastAPI(

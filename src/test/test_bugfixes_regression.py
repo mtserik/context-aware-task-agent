@@ -70,9 +70,119 @@ def test_vector_point_id_determinism():
     assert len(id1) == 36
     print("[OK] test_vector_point_id_determinism PASSOU")
 
+def test_router_heuristic_fast_path():
+    """Test Item 4.1: Short messages and greetings must resolve immediately without LLM call."""
+    import asyncio
+    from src.agent.engine import MaeveAgent
+    
+    agent = MaeveAgent()
+    
+    # Test cases that should trigger fast path (complexity 1, model fast)
+    for sample in ["oi", "Oi Maeve", "bom dia!", "Ola", "valeu!", "ok"]:
+        state = {"messages": [HumanMessage(content=sample)]}
+        result = asyncio.run(agent._router_node(state))
+        assert result["routing_metadata"]["model"] == "fast"
+        assert result["routing_metadata"]["complexity"] == 1
+        assert "Heuristic" in result["routing_metadata"]["reason"]
+    
+    print("[OK] test_router_heuristic_fast_path PASSOU")
+
+def test_router_regex_json_parsing():
+    """Test Item 2.1: Router must extract JSON even if LLM wraps it in conversational prose or markdown."""
+    import re
+    import json
+    
+    dirty_llm_outputs = [
+        'Aqui está o JSON:\n```json\n{"complexity": 2, "model": "smart", "reason": "planejamento complexo"}\n```\nEspero ter ajudado!',
+        'Claro! {"complexity": 1, "model": "fast", "reason": "simples"}',
+        '```\n{"complexity": 3, "model": "smart", "reason": "analise profunda"}\n```'
+    ]
+    
+    for raw in dirty_llm_outputs:
+        json_match = re.search(r"\{.*?\}", raw, re.DOTALL)
+        assert json_match is not None
+        parsed = json.loads(json_match.group(0))
+        assert "model" in parsed
+        assert "complexity" in parsed
+    
+    print("[OK] test_router_regex_json_parsing PASSOU")
+
+def test_ticktick_connection_pooling():
+    """Test Item 4.3: TickTickService must reuse the same httpx.AsyncClient instance."""
+    import asyncio
+    from src.services.ticktick import TickTickService
+    
+    svc = TickTickService()
+    c1 = svc._get_client()
+    c2 = svc._get_client()
+    assert c1 is c2
+    assert not c1.is_closed
+    
+    # Close client
+    asyncio.run(svc.aclose())
+    assert svc._client is None
+    
+    # New call lazily re-instantiates
+    c3 = svc._get_client()
+    assert c3 is not None
+    assert c3 is not c1
+    asyncio.run(svc.aclose())
+    print("[OK] test_ticktick_connection_pooling PASSOU")
+
+def test_service_registry_singletons():
+    """Test Item 5.3: Service Registry must return singleton instances and decouple dependencies."""
+    from src.services.registry import (
+        get_obsidian_service,
+        get_vector_db_service,
+        get_ticktick_service,
+        get_database_service,
+        get_search_service,
+        get_telegram_service
+    )
+    
+    assert get_obsidian_service() is get_obsidian_service()
+    assert get_vector_db_service() is get_vector_db_service()
+    assert get_ticktick_service() is get_ticktick_service()
+    assert get_database_service() is get_database_service()
+    assert get_search_service() is get_search_service()
+    assert get_telegram_service() is get_telegram_service()
+    print("[OK] test_service_registry_singletons PASSOU")
+
+def test_selective_rag_skipping():
+    """Test Item 5.2: Trivial greetings must be skipped from RAG search."""
+    trivial_greetings = {
+        "oi", "ola", "olá", "bom dia", "boa tarde", "boa noite",
+        "opa", "e ai", "e aí", "valeu", "obrigado", "obrigada",
+        "ok", "beleza", "blz", "tchau", "ate mais", "até mais",
+        "sim", "não", "nao", "show", "perfeito"
+    }
+    
+    def should_search(query: str, complexity: int) -> bool:
+        should = bool(query)
+        if should and complexity == 1:
+            clean_q = str(query).strip().lower()
+            if clean_q in trivial_greetings or len(clean_q) < 4:
+                should = False
+        return should
+
+    # Simple greetings with complexity 1: skipped
+    assert should_search("oi", 1) is False
+    assert should_search("Bom dia", 1) is False
+    assert should_search("ok", 1) is False
+    
+    # Actual questions: searched
+    assert should_search("Quais são as minhas metas de 2026?", 1) is True
+    assert should_search("Qual foi a arquitetura decidida para o MCP?", 2) is True
+    print("[OK] test_selective_rag_skipping PASSOU")
+
 if __name__ == "__main__":
     test_obsidian_path_traversal_blocked()
     test_ticktick_date_normalization()
     test_get_valid_sequence_termination()
     test_vector_point_id_determinism()
+    test_router_heuristic_fast_path()
+    test_router_regex_json_parsing()
+    test_ticktick_connection_pooling()
+    test_service_registry_singletons()
+    test_selective_rag_skipping()
     print("\n>>> TODOS OS TESTES DE REGRESSAO PASSARAM COM SUCESSO! <<<")

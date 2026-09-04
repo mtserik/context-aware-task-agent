@@ -1,4 +1,5 @@
 import os
+import asyncio
 import subprocess
 import glob
 import re
@@ -28,8 +29,8 @@ class ObsidianService:
         try:
             # Verifica se já está configurado no repositório
             if os.path.exists(os.path.join(self.vault_path, ".git")):
-                self._run_git(["config", "user.name", "Maeve AI Agent"])
-                self._run_git(["config", "user.email", "maeve-agent@internal.local"])
+                self._run_git_sync(["config", "user.name", "Maeve AI Agent"])
+                self._run_git_sync(["config", "user.email", "maeve-agent@internal.local"])
                 print("Identidade Git configurada para Maeve.")
         except Exception as e:
             print(f"Aviso: Não foi possível configurar o usuário Git: {e}")
@@ -73,12 +74,12 @@ class ObsidianService:
                 print("Aviso: Nenhuma chave SSH encontrada (variável ou arquivo). Git pode falhar.")
                 return
 
-            # Configura o comando Git para usar a chave correta
-            # Adicionado -v para debug se necessário, mas mantido limpo por padrão
+            # Configura o comando Git para usar a chave correta de forma segura
+            known_hosts_path = os.path.join(tempfile.gettempdir(), "maeve_known_hosts")
             ssh_options = [
                 f"-i {self.ssh_key_dest}",
-                "-o StrictHostKeyChecking=no",
-                "-o UserKnownHostsFile=/dev/null",
+                "-o StrictHostKeyChecking=accept-new",
+                f"-o UserKnownHostsFile={known_hosts_path}",
                 "-o IdentitiesOnly=yes" # Garante que use APENAS a chave fornecida
             ]
             
@@ -92,8 +93,8 @@ class ObsidianService:
         except Exception as e:
             print(f"Erro ao configurar SSH: {e}")
 
-    def _run_git(self, args: List[str]):
-        """Executa um comando git no diretório do vault."""
+    def _run_git_sync(self, args: List[str]):
+        """Executa um comando git no diretório do vault de forma síncrona."""
         try:
             result = subprocess.run(
                 ["git"] + args,
@@ -109,6 +110,10 @@ class ObsidianService:
             print(f"Erro ao executar git {' '.join(args)}: {error_msg}")
             raise e
 
+    async def _run_git(self, args: List[str]):
+        """Executa comando git sem bloquear o Event Loop do asyncio."""
+        return await asyncio.to_thread(self._run_git_sync, args)
+
     async def sync(self):
         """
         Garante que o repositório está clonado e atualizado.
@@ -123,23 +128,22 @@ class ObsidianService:
             
             try:
                 # 1. git init (funciona mesmo que a pasta exista e não esteja vazia)
-                subprocess.run(["git", "init"], cwd=self.vault_path, check=True)
+                await asyncio.to_thread(subprocess.run, ["git", "init"], cwd=self.vault_path, check=True)
                 
                 # 2. Configurar remote
-                # Remove o remote se já existir (raro, mas evita erros)
                 try:
-                    subprocess.run(["git", "remote", "remove", "origin"], cwd=self.vault_path, capture_output=True)
+                    await asyncio.to_thread(subprocess.run, ["git", "remote", "remove", "origin"], cwd=self.vault_path, capture_output=True)
                 except:
                     pass
-                subprocess.run(["git", "remote", "add", "origin", self.repo_url], cwd=self.vault_path, check=True)
+                await asyncio.to_thread(subprocess.run, ["git", "remote", "add", "origin", self.repo_url], cwd=self.vault_path, check=True)
                 
                 # 3. Configurar usuário Git localmente
                 self._setup_git_user()
                 
                 # 4. Fetch e Reset (usando env para SSH_COMMAND)
                 print(f"Baixando arquivos de {self.repo_url}...")
-                subprocess.run(["git", "fetch", "origin"], cwd=self.vault_path, env=os.environ, check=True)
-                subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=self.vault_path, check=True)
+                await asyncio.to_thread(subprocess.run, ["git", "fetch", "origin"], cwd=self.vault_path, env=os.environ, check=True)
+                await asyncio.to_thread(subprocess.run, ["git", "reset", "--hard", "origin/main"], cwd=self.vault_path, check=True)
                 
                 print("Vault inicializado com sucesso via git init.")
             except subprocess.CalledProcessError as e:
@@ -150,14 +154,14 @@ class ObsidianService:
             print("Atualizando Vault (git pull)...")
             try:
                 # O pull --rebase é mais limpo para automações
-                self._run_git(["pull", "--rebase", "origin", "main"])
+                await self._run_git(["pull", "--rebase", "origin", "main"])
             except Exception as e:
                 print(f"Erro no pull --rebase: {e}. Tentando abortar rebase.")
                 try:
-                    self._run_git(["rebase", "--abort"])
+                    await self._run_git(["rebase", "--abort"])
                 except:
                     pass
-                self._run_git(["pull", "origin", "main", "--no-edit"])
+                await self._run_git(["pull", "origin", "main", "--no-edit"])
 
     async def push(self, message: str = "Maeve Auto-update"):
         """
@@ -165,26 +169,26 @@ class ObsidianService:
         Implementa lógica de rebase e resolução de conflitos simples.
         """
         try:
-            self._run_git(["add", "."])
-            status = self._run_git(["status", "--porcelain"])
+            await self._run_git(["add", "."])
+            status = await self._run_git(["status", "--porcelain"])
             
             if status.strip():
-                self._run_git(["commit", "-m", message])
+                await self._run_git(["commit", "-m", message])
                 
                 # Sincronização robusta
                 print("Sincronizando com o remoto antes do push (pull --rebase)...")
                 try:
-                    self._run_git(["pull", "--rebase", "origin", "main"])
+                    await self._run_git(["pull", "--rebase", "origin", "main"])
                 except Exception:
                     print("Conflito detectado ou falha no rebase. Tentando forçar resolução...")
                     try:
-                        self._run_git(["rebase", "--abort"])
+                        await self._run_git(["rebase", "--abort"])
                     except:
                         pass
                     # Tenta pull simples com estratégia recursiva padrão
-                    self._run_git(["pull", "origin", "main", "--no-edit"])
+                    await self._run_git(["pull", "origin", "main", "--no-edit"])
                 
-                self._run_git(["push", "origin", "main"])
+                await self._run_git(["push", "origin", "main"])
                 print(f"Alterações enviadas com sucesso: {message}")
             else:
                 print("Nada para commitar.")

@@ -93,7 +93,6 @@ context-aware-task-agent/
 └── src/
     ├── main.py            # FastAPI app entry point, startup orchestration
     ├── cli.py             # Rich terminal CLI client
-    ├── chat.py            # Legacy simple chat client (deprecated)
     ├── debug_tasks.py     # TickTick debugging utility
     ├── setup_ticktick.py  # OAuth2 setup helper
     ├── agent/
@@ -105,78 +104,79 @@ context-aware-task-agent/
     │   └── schemas.py     # Pydantic request/response models
     ├── services/
     │   ├── database.py    # Supabase/Postgres: pool, checkpointer, reminders
-    │   ├── notion.py      # Notion API integration (legacy, pre-Obsidian)
     │   ├── obsidian.py    # Obsidian Vault: Git sync, CRUD, frontmatter
+    │   ├── registry.py    # Shared singleton service registry & dependency decoupling
     │   ├── reminder_worker.py  # Background worker for scheduled reminders
     │   ├── search.py      # Tavily web search & deep research
     │   ├── telegram_bot.py    # Telegram interface: text, voice, PDFs
     │   ├── ticktick.py    # TickTick REST API + MCP JSON-RPC client
     │   └── vector_db.py   # Qdrant async client: embeddings & search
-    └── test/              # (Empty — reserved for test suite)
+    └── test/
+        └── test_bugfixes_regression.py # Comprehensive regression test suite
 ```
 
 ---
 
-## 5. Code Quality Audit & Improvement Opportunities
+## 5. Code Quality Audit & Resolution Status
 
-> Full audit performed on 2026-09-03. Items are prioritized by impact.
+> Full audit performed on 2026-09-03 and remediated on branch `fix/critical-bugs-audit`.
 
 ### 5.1 Architecture & Design Issues
 
-| ID | Severity | File(s) | Issue | Recommended Fix |
-|:---|:---------|:--------|:------|:----------------|
-| A1 | 🔴 High | `engine.py` | **God Module.** 536 lines mixing tool definitions, service init, routing logic, model invocation and graph building. Hard to test and maintain. | Extract tools into `src/agent/tools/` modules (obsidian_tools.py, ticktick_tools.py, etc.). Move graph building to a factory function. |
-| A2 | 🔴 High | `engine.py`, `main.py` | **Duplicate service instantiation.** Both files create independent instances of `ObsidianService`, `VectorDBService`, `TickTickService`. These are stateful singletons being duplicated. | Create a `src/services/registry.py` with lazy singleton pattern. Inject via dependency. |
-| A3 | 🟡 Medium | `telegram_bot.py` L44, L109, L125 | **Circular imports.** Three `from src.main import ...` inside methods to access `maeve` and `db_service`. Fragile and untestable. | Pass dependencies via constructor injection or a shared registry. |
-| A4 | 🟡 Medium | `api/` directory | **Empty module.** FastAPI routes are defined inline in `main.py`. | Refactor into `api/routes.py` with an APIRouter for `/chat`, `/sync/obsidian`, OAuth callbacks. |
-| A5 | 🟡 Medium | `state.py` L8 | **`current_intent` field unused.** Defined in `AgentState` but never read or written anywhere. | Remove or implement intent tracking. |
-| A6 | 🟢 Low | `notion.py` | **Dead code.** Notion was replaced by Obsidian but the service file and `notion-client` dependency remain. | Remove `notion.py` and `notion-client` from `requirements.txt`. |
-| A7 | 🟢 Low | `chat.py` | **Superseded by `cli.py`.** Legacy sync chat client using bare `requests`. | Remove or archive. |
+| ID | Severity | File(s) | Issue | Status & Fix |
+|:---|:---------|:--------|:------|:-------------|
+| A1 | 🔴 High | `engine.py` | **God Module.** Mixing tool definitions, service init, routing logic, and graph building. | ⏳ Em progresso na Fase 3. Ferramentas e serviços isolados via Registry. |
+| A2 | 🔴 High | `engine.py`, `main.py` | **Duplicate service instantiation.** Stateful singletons duplicated. | ✅ **Resolvido.** Criado `src/services/registry.py` com singletons lazy desacoplados. |
+| A3 | 🟡 Medium | `telegram_bot.py` | **Circular imports.** `from src.main import ...` inside methods. | ✅ **Resolvido.** `telegram_bot.py` consome dependências via `registry.py`. |
+| A4 | 🟡 Medium | `api/` directory | **Empty module.** FastAPI routes inline in `main.py`. | ⏳ Reservado para migração de rotas REST. |
+| A5 | 🟡 Medium | `state.py` | **`current_intent` field unused.** Defined in `AgentState`. | ⏳ Mantido para intent tracking da Fase 3. |
+| A6 | 🟢 Low | `notion.py` | **Dead code.** Notion migration artifact. | ✅ **Resolvido.** Arquivo e dependências removidos. |
+| A7 | 🟢 Low | `chat.py` | **Superseded by `cli.py`.** Legacy sync chat client. | ✅ **Resolvido.** Arquivo removido via Git. |
 
 ### 5.2 Security & Reliability Issues
 
-| ID | Severity | File(s) | Issue | Recommended Fix |
-|:---|:---------|:--------|:------|:----------------|
-| S1 | 🔴 High | `obsidian.py` L79 | **`StrictHostKeyChecking=no`** disables SSH host verification. Acceptable in Docker, risky if ever run outside. | Use `StrictHostKeyChecking=accept-new` or maintain a known_hosts file. |
-| S2 | 🔴 High | `engine.py` L380-381 | **Hardcoded model names.** `gpt-4o-mini` and `gpt-4o` are hardcoded. No env override. | Move to env vars `MAEVE_FAST_MODEL`, `MAEVE_SMART_MODEL` with defaults. |
-| S3 | 🟡 Medium | `main.py` L44, L70 | **Deprecated FastAPI lifecycle events.** `@app.on_event("startup")` and `"shutdown"` are deprecated since FastAPI 0.93+. | Migrate to `@app.lifespan` context manager. |
-| S4 | 🟡 Medium | `vector_db.py` L53 | **Unstable point IDs.** `hash(...)  % (10**10)` can produce collisions and negative values (Python `hash()` can be negative). Qdrant expects positive uint64. | Use `uuid.uuid5(NAMESPACE, path)` or deterministic hash with `abs()`. |
-| S5 | 🟡 Medium | `vector_db.py` L46 | **Sync embedding call in async context.** `embed_documents()` is synchronous and blocks the event loop. | Use `aembed_documents()` or `asyncio.to_thread()`. |
-| S6 | 🟢 Low | `search.py` L29 | **Sync Tavily client in async method.** `self.client.search()` blocks the event loop. | Wrap in `asyncio.to_thread()`. |
-| S7 | 🟢 Low | `requirements.txt` | **Unpinned dependencies.** No version pins at all. Builds are non-reproducible. | Pin major versions or use `pip freeze`. |
-| S8 | 🟢 Low | `requirements.txt` L17 | **`requests` is unused.** Only `httpx` is used in async code. `chat.py` (deprecated) uses it. | Remove with `chat.py`. |
+| ID | Severity | File(s) | Issue | Status & Fix |
+|:---|:---------|:--------|:------|:-------------|
+| S1 | 🔴 High | `obsidian.py` | **`StrictHostKeyChecking=no`** disables SSH verification. | ✅ **Resolvido.** Atualizado para `StrictHostKeyChecking=accept-new` com known_hosts. |
+| S2 | 🔴 High | `engine.py` | **Hardcoded model names.** No env override. | ✅ **Resolvido.** Migrado para variáveis `MAEVE_FAST_MODEL` e `MAEVE_SMART_MODEL`. |
+| S3 | 🟡 Medium | `main.py` | **Deprecated FastAPI lifecycle events.** | ✅ **Resolvido.** Migrado para `@app.lifespan` context manager. |
+| S4 | 🟡 Medium | `vector_db.py` | **Unstable point IDs.** Collision/negative hash risk. | ✅ **Resolvido.** Migrado para `uuid.uuid5(NAMESPACE_URL, key)`. |
+| S5 | 🟡 Medium | `vector_db.py` | **Sync embedding call in async context.** | ✅ **Resolvido.** Utiliza `aembed_documents()` e `aembed_query()`. |
+| S6 | 🟢 Low | `search.py` | **Sync Tavily client in async method.** | ✅ **Resolvido.** Execução assíncrona desacoplada via `asyncio.to_thread`. |
+| S7 | 🟢 Low | `requirements.txt` | **Unpinned dependencies.** Non-reproducible builds. | ✅ **Resolvido.** Todas as dependências pinadas estritamente. |
+| S8 | 🟢 Low | `requirements.txt` | **`requests` is unused.** | ✅ **Resolvido.** Removido do requirements.txt. |
 
 ### 5.3 Performance & Operational Issues
 
-| ID | Severity | File(s) | Issue | Recommended Fix |
-|:---|:---------|:--------|:------|:----------------|
-| P1 | 🟡 Medium | `engine.py` L413-428 | **Router LLM call on every message.** Even "oi" triggers a full gpt-4o-mini API call for complexity classification. Adds ~300-500ms latency per message. | Add heuristic pre-filter (message length < 20 chars → fast, contains "planejar"/"organizar" → smart) before LLM router. |
-| P2 | 🟡 Medium | `obsidian.py` L92-107 | **Blocking subprocess in async service.** All `_run_git()` calls use `subprocess.run()` which blocks the event loop. | Use `asyncio.create_subprocess_exec()`. |
-| P3 | 🟡 Medium | `ticktick.py` | **New `httpx.AsyncClient()` per call.** Most methods create a new client instance per invocation instead of reusing a session. | Create a shared `self.client` with connection pooling in `__init__`. |
-| P4 | 🟢 Low | `engine.py` L480 | **RAG search on every message.** Even greetings trigger a vector search. Wastes embedding API calls. | Skip RAG for messages classified as complexity 1 by the router. |
-| P5 | 🟢 Low | `telegram_bot.py` L268 | **PDF text truncated to 10000 chars** without chunking. Large PDFs lose most content. | Implement chunking: split into sections, summarize each, then synthesize. |
+| ID | Severity | File(s) | Issue | Status & Fix |
+|:---|:---------|:--------|:------|:-------------|
+| P1 | 🟡 Medium | `engine.py` | **Router LLM call on every message.** | ✅ **Resolvido.** Heurística Fast-Path pula LLM para saudações e mensagens curtas. |
+| P2 | 🟡 Medium | `obsidian.py` | **Blocking subprocess in async service.** | ✅ **Resolvido.** Operações Git encapsuladas em `asyncio.to_thread`. |
+| P3 | 🟡 Medium | `ticktick.py` | **New `httpx.AsyncClient()` per call.** | ✅ **Resolvido.** Connection pooling com cliente persistente `_get_client()` e `aclose()`. |
+| P4 | 🟢 Low | `engine.py` | **RAG search on every message.** | ✅ **Resolvido.** RAG seletivo: queries triviais não disparam busca vetorial. |
+| P5 | 🟢 Low | `telegram_bot.py` | **PDF text truncated to 10000 chars.** | ⏳ Agendado para Fase 3 (Chunking multimodal). |
 
 ### 5.4 Critical Runtime Bugs (Deep Review Findings)
 
-| ID | Severity | File(s) | Bug | Impact |
-|:---|:---------|:--------|:----|:-------|
-| B1 | 🔴 Critical | `engine.py` L447-452 | **Potential infinite loop in `get_valid_sequence`.** If message history starts with a `ToolMessage`, `limit` increments past `len(msgs)` but `msgs[-limit:]` returns `msgs[0:]` → `subset[0]` remains a `ToolMessage` → loop never terminates. | Process freeze, 100% CPU. |
-| B2 | 🔴 Critical | `telegram_bot.py` L62 | **`await response.aread()` crashes.** OpenAI TTS `speech.create()` returns `HttpxBinaryResponseContent`, which has no `aread()` coroutine. Every audio response fails. | TTS completely broken. |
-| B3 | 🟡 High | `engine.py` L151-152 | **Malformed date timezone append.** For dates like `"2026-09-03"` (length 10), `final_due[10:]` is `""`, so `"-0300"` is appended directly → `"2026-09-03-0300"` — invalid ISO format rejected by TickTick API. | Time Blocking silently fails. |
-| B4 | 🔴 Critical | `obsidian.py` L274, L295, L336, L354 | **Path traversal vulnerability.** No validation that resolved path stays within `vault_path`. Input `../../.env` lets the LLM read/write/delete any file on the host/container. | Arbitrary file access. |
-| B5 | 🟡 High | `reminder_worker.py` L31-36 | **Infinite reminder loop.** If reminder `content` has Markdown chars (`_`, `*`), Telegram rejects the message → `mark_reminder_completed` never runs → worker retries every 60s forever. | Infinite API spam. |
-| B6 | 🟡 High | `telegram_bot.py` L176 | **Telegram 4096 char limit not handled.** Long responses raise `BadRequest: Message is too long`. | Agent response lost. |
-| B7 | 🟡 Medium | `engine.py` L425 | **Router creates new `ChatOpenAI` instance every turn** instead of reusing `self.fast_model`. Wastes memory and initialization cost. | Performance degradation. |
-| B8 | 🟡 Medium | `engine.py` L481 | **RAG context truncated to 200 chars** per document. Effectively useless for knowledge retrieval. | RAG quality severely degraded. |
-| B9 | 🟢 Low | `engine.py` L196-198 | **Date filter uses string `in` operator.** UTC offset mismatches (UTC vs BRT) cause tasks to be filtered out. Also violates the "7 days lookback" mandate in prompts. | Missing overdue tasks. |
+| ID | Severity | File(s) | Bug | Status & Impact |
+|:---|:---------|:--------|:----|:----------------|
+| B1 | 🔴 Critical | `engine.py` | **Infinite loop in `get_valid_sequence`.** | ✅ **Resolvido.** Limpeza rigorosa de ToolMessages órfãs sem loop infinito. |
+| B2 | 🔴 Critical | `telegram_bot.py` | **`await response.aread()` crashes.** | ✅ **Resolvido.** Utiliza `response.write_to_file()` nativo do OpenAI TTS SDK. |
+| B3 | 🟡 High | `engine.py` | **Malformed date timezone append.** | ✅ **Resolvido.** Função `_normalize_ticktick_date` gera ISO compliant. |
+| B4 | 🔴 Critical | `obsidian.py` | **Path traversal vulnerability.** | ✅ **Resolvido.** Validação `_safe_resolve` bloqueia qualquer tentativa fora do vault. |
+| B5 | 🟡 High | `reminder_worker.py` | **Infinite reminder loop.** | ✅ **Resolvido.** Fallback de texto puro e marcação garantida de lembrete concluído. |
+| B6 | 🟡 High | `telegram_bot.py` | **Telegram 4096 char limit not handled.** | ✅ **Resolvido.** Divisão inteligente em chunks respeitando quebras de linha. |
+| B7 | 🟡 Medium | `engine.py` | **Router creates new `ChatOpenAI` instance every turn.** | ✅ **Resolvido.** Reutilização da instância singleton de `router_model`. |
+| B8 | 🟡 Medium | `engine.py` | **RAG context truncated to 200 chars.** | ✅ **Resolvido.** Contexto expandido para 1000 chars por documento relevante. |
+| B9 | 🟢 Low | `engine.py` | **Date filter uses string `in` operator.** | ✅ **Resolvido.** Normalização de datas e comparadores ISO robustos. |
 
 ### 5.5 Testing & Observability Gaps
 
-| ID | Severity | Issue | Recommended Fix |
-|:---|:---------|:------|:----------------|
-| T1 | 🟡 Medium | **Zero test coverage.** `src/test/` is empty. No unit or integration tests. | Add pytest fixtures for services with mock APIs. Start with `ticktick.py` and `obsidian.py`. |
-| T2 | 🟡 Medium | **No structured logging.** Mix of `print()` and `logging.*` across the codebase. No log levels, no JSON output. | Standardize on `structlog` or Python `logging` with JSON formatter for Railway. |
-| T3 | 🟢 Low | **No health check endpoint.** Docker/Railway can't verify container health. | Add `GET /health` returning DB pool status + Qdrant connectivity. |
+| ID | Severity | Issue | Status & Fix |
+|:---|:---------|:------|:-------------|
+| T1 | 🟡 Medium | **Zero test coverage.** | ✅ **Resolvido.** Suíte de testes de regressão criada em `src/test/test_bugfixes_regression.py`. |
+| T2 | 🟡 Medium | **No structured logging.** | ⏳ Padronização com JSON formatter prevista na Fase 3. |
+| T3 | 🟢 Low | **No health check endpoint.** | ✅ **Resolvido.** Endpoint `GET /health` ativo reportando DB pool e status do agente. |
 
 ---
 
