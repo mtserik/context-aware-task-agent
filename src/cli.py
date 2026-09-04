@@ -39,7 +39,7 @@ console = Console(theme=custom_theme)
 # --- Configurações ---
 API_URL = os.getenv("MAEVE_API_URL", "http://localhost:8000")
 API_KEY = os.getenv("API_KEY")
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 class MaeveCLI:
     def __init__(self):

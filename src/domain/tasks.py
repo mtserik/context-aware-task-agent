@@ -1,0 +1,258 @@
+import os
+import json
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
+
+from src.domain.models import TaskResult
+from src.services.registry import get_ticktick_service
+from src.services.ticktick import TickTickService
+
+def normalize_ticktick_date(date_str: Optional[str]) -> Optional[str]:
+    """
+    Normaliza strings de data para o padrão ISO exigido pela API do TickTick (-0300 BRT).
+    Garante compliance estrito para datas pontuais e Time-Blocking (startDate / dueDate).
+    """
+    if not date_str:
+        return date_str
+    d = str(date_str).strip()
+    if len(d) == 10 and d.count("-") == 2:
+        return f"{d}T00:00:00-0300"
+    if "T" in d:
+        time_part = d.split("T")[1]
+        if "Z" not in time_part and "+" not in time_part and "-" not in time_part:
+            return f"{d}-0300"
+    elif "Z" not in d and "+" not in d and "-" not in d[10:]:
+        return f"{d}-0300"
+    return d
+
+class TaskDomainService:
+    """
+    Serviço de Domínio responsável pelas regras de negócio de tarefas (TickTick).
+    Totalmente agnóstico de frameworks de apresentação (LangGraph, MCP, REST).
+    """
+    def __init__(self, ticktick_service: Optional[TickTickService] = None):
+        self._ticktick = ticktick_service
+
+    @property
+    def ticktick(self) -> TickTickService:
+        if self._ticktick is None:
+            self._ticktick = get_ticktick_service()
+        return self._ticktick
+
+    async def create_task(
+        self,
+        title: str,
+        content: str = "",
+        due_date: Optional[str] = None,
+        priority: int = 0,
+        project_id: Optional[str] = None,
+        parent_id: Optional[str] = None
+    ) -> TaskResult:
+        """
+        Cria uma tarefa ou subtarefa no TickTick com herança e fallback de projeto.
+        """
+        try:
+            res = await self.ticktick.create_task(
+                title=title,
+                content=content,
+                due_date=due_date,
+                project_id=project_id,
+                priority=priority,
+                parent_id=parent_id
+            )
+            task_id = res.get('id') if isinstance(res, dict) else str(res)
+            return TaskResult(
+                success=True,
+                message=f"ID_CRIADO: {task_id}",
+                task_id=task_id,
+                data=res
+            )
+        except Exception as e:
+            return TaskResult(
+                success=False,
+                message=f"Erro ao criar tarefa: {str(e)}",
+                task_id=None
+            )
+
+    async def batch_update_tasks(self, tasks_to_update: List[Dict[str, Any]]) -> TaskResult:
+        """
+        Atualiza múltiplas tarefas no TickTick com normalização de Time-Blocking e throttle.
+        """
+        try:
+            normalized = []
+            for t in tasks_to_update:
+                item = t.copy()
+                if "project_id" in item:
+                    item["projectId"] = item.pop("project_id")
+
+                final_due = normalize_ticktick_date(item.pop("due_date", None))
+                final_start = normalize_ticktick_date(item.pop("start_date", None))
+
+                if final_due:
+                    item["dueDate"] = final_due
+                    item["startDate"] = final_start or final_due
+
+                normalized.append(item)
+
+            results = await self.ticktick.batch_update_tasks(normalized)
+            successes = [r for r in results if r.get("status") == 200]
+            msg = f"Processadas {len(results)} atualizações. Sucessos: {len(successes)}."
+            return TaskResult(
+                success=len(successes) > 0 or len(results) == 0,
+                message=f"✅ {msg}" if len(successes) == len(results) else f"⚠️ {msg}",
+                data=results
+            )
+        except Exception as e:
+            return TaskResult(
+                success=False,
+                message=f"Erro no motor de lote: {str(e)}",
+                data=None
+            )
+
+    async def get_tasks(
+        self,
+        date_filter: Optional[str] = None,
+        project_id: Optional[str] = None
+    ) -> TaskResult:
+        """
+        Lista tarefas pendentes com suporte a 7 dias de lookback para itens atrasados.
+        """
+        try:
+            tasks = await self.ticktick.get_tasks(project_id=project_id)
+            if not tasks:
+                return TaskResult(success=True, message="Nenhuma tarefa pendente encontrada.", data=[])
+
+            # Filtro inteligente de data com 7 dias de lookback
+            if date_filter:
+                try:
+                    target_dt = datetime.strptime(date_filter[:10], "%Y-%m-%d").date()
+                    start_lookback = target_dt - timedelta(days=7)
+                    filtered = []
+                    for t in tasks:
+                        due_raw = t.get('dueDate')
+                        if not due_raw:
+                            continue
+                        due_date_str = str(due_raw)[:10]
+                        try:
+                            task_dt = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+                            if start_lookback <= task_dt <= target_dt:
+                                filtered.append(t)
+                        except ValueError:
+                            if date_filter in str(due_raw):
+                                filtered.append(t)
+                    tasks = filtered
+                except Exception:
+                    tasks = [t for t in tasks if t.get('dueDate') and date_filter in str(t['dueDate'])]
+
+            if not tasks:
+                return TaskResult(
+                    success=True,
+                    message=f"Nenhuma tarefa pendente para a data {date_filter}.",
+                    data=[]
+                )
+
+            total_count = len(tasks)
+            display_tasks = tasks[:40]
+
+            msg = f"TOTAL ENCONTRADO: {total_count} itens pendentes.\n\n"
+            msg += "\n".join([
+                f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}, Proj: {t.get('projectId', 'inbox')}, Kind: {t.get('kind', 'TASK')}]"
+                for t in display_tasks
+            ])
+            if total_count > 40:
+                msg += f"\n\n... (Exibindo 40 de {total_count} itens por brevidade)."
+
+            return TaskResult(success=True, message=msg, data=tasks)
+        except Exception as e:
+            return TaskResult(success=False, message=f"Erro ao buscar tarefas: {str(e)}", data=[])
+
+    async def get_task_details(self, item_id: str) -> TaskResult:
+        """Obtém detalhes e conteúdo completo de uma tarefa/nota."""
+        try:
+            details = await self.ticktick.get_task_by_id(item_id)
+            formatted = json.dumps(details, indent=2, ensure_ascii=False)
+            return TaskResult(success=True, message=formatted, task_id=item_id, data=details)
+        except Exception as e:
+            return TaskResult(success=False, message=f"Erro ao buscar detalhes: {str(e)}", task_id=item_id)
+
+    async def delete_task(self, project_id: str, item_id: str) -> TaskResult:
+        """Remove definitivamente uma tarefa ou nota do TickTick."""
+        try:
+            success = await self.ticktick.delete_task(project_id, item_id)
+            return TaskResult(
+                success=success,
+                message="✅ Item removido com sucesso." if success else "❌ Falha ao remover item.",
+                task_id=item_id
+            )
+        except Exception as e:
+            return TaskResult(success=False, message=f"Erro ao deletar: {str(e)}", task_id=item_id)
+
+    async def create_project(self, name: str, color: Optional[str] = None, view_mode: str = "list") -> TaskResult:
+        """Cria uma nova lista/projeto no TickTick."""
+        try:
+            res = await self.ticktick.create_project(name, color, view_mode)
+            proj_id = res.get('id')
+            return TaskResult(success=True, message=f"✅ Projeto criado! ID: {proj_id}", data=res)
+        except Exception as e:
+            return TaskResult(success=False, message=f"Erro ao criar projeto: {str(e)}")
+
+    async def list_structure(self, include_groups: bool = True) -> TaskResult:
+        """Retorna hierarquia de pastas (grupos) e listas do TickTick."""
+        try:
+            projects = await self.ticktick.list_projects()
+            structure = "ESTRUTURA TICKTICK:\n"
+
+            if include_groups:
+                groups = await self.ticktick.list_project_groups()
+                group_map = {g['id']: g['name'] for g in groups}
+                by_group = {}
+                for p in projects:
+                    gid = p.get('groupId', 'no_group')
+                    if gid not in by_group:
+                        by_group[gid] = []
+                    by_group[gid].append(p)
+
+                for gid, projs in by_group.items():
+                    gname = group_map.get(gid, "Sem Pasta")
+                    structure += f"\n📂 {gname}:\n"
+                    for p in projs:
+                        structure += f"  - 📝 {p['name']} [ID: {p['id']}, Kind: {p.get('kind')}]\n"
+            else:
+                for p in projects:
+                    structure += f"- 📝 {p['name']} [ID: {p['id']}, Kind: {p.get('kind')}]\n"
+
+            return TaskResult(success=True, message=structure, data=projects)
+        except Exception as e:
+            return TaskResult(success=False, message=f"Erro ao listar estrutura: {str(e)}")
+
+    async def verify_task(self, task_id: str) -> TaskResult:
+        """Verifica se uma tarefa recém-criada existe no servidor."""
+        try:
+            details = await self.ticktick.get_task_by_id(task_id)
+            if details and 'id' in details:
+                msg = f"✅ Tarefa confirmada! Ela está no projeto ID: {details.get('projectId')} com o título: '{details.get('title')}'"
+                return TaskResult(success=True, message=msg, task_id=task_id, data=details)
+            return TaskResult(success=False, message="❌ A tarefa não foi encontrada no servidor após a criação.", task_id=task_id)
+        except Exception as e:
+            return TaskResult(success=False, message=f"Erro na verificação: {str(e)}", task_id=task_id)
+
+    async def get_metrics(self, query_type: str, start_date: Optional[str] = None) -> TaskResult:
+        """Obtém métricas e estatísticas via MCP (hábitos, foco, tarefas concluídas)."""
+        try:
+            if query_type == "habits":
+                content = await self.ticktick.get_habits()
+            elif query_type == "focus_records":
+                content = await self.ticktick.get_focus_records(start_date)
+            else:
+                content = await self.ticktick.get_completed_tasks_history(start_date)
+            return TaskResult(success=True, message=f"Métricas via MCP:\n{content}", data=content)
+        except Exception as e:
+            return TaskResult(success=False, message=f"Erro MCP: {str(e)}")
+
+    async def batch_create_tasks(self, tasks_list: List[Dict[str, Any]]) -> TaskResult:
+        """Cria tarefas em lote via MCP."""
+        try:
+            result = await self.ticktick.call_mcp_tool("batch_add_tasks", {"tasks": tasks_list})
+            return TaskResult(success=True, message=f"✅ {len(tasks_list)} tarefas criadas.", data=result)
+        except Exception as e:
+            return TaskResult(success=False, message=f"Erro lote criação: {str(e)}")

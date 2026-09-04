@@ -1,479 +1,221 @@
 import os
 import re
-from datetime import datetime, timedelta
-import httpx
-import yaml
 import json
-from typing import List, Dict, Any
+import logging
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
-from src.agent.state import AgentState
-from src.services.registry import (
-    get_ticktick_service,
-    get_obsidian_service,
-    get_vector_db_service,
-    get_database_service,
-    get_search_service
-)
-from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage, BaseMessage
 from dotenv import load_dotenv
 
-load_dotenv()
-
-# --- Inicialização dos Serviços via Registry ---
-ticktick = get_ticktick_service()
-obsidian = get_obsidian_service()
-vector_db = get_vector_db_service()
-db_service = get_database_service()
-search_service = get_search_service()
-
-# --- Ferramentas Obsidian ---
-
-@tool
-async def create_obsidian_note(title: str, content: str, folder: str = "Inbox"):
-    """Cria uma nova nota no Vault do Obsidian."""
-    filename = f"{title}.md" if not title.endswith(".md") else title
-    relative_path = os.path.join(folder, filename)
-    commit_msg = f"Maeve: Criou nota '{title}' em {folder}"
-    await obsidian.write_note(relative_path, content, commit_message=commit_msg)
-    return f"Nota '{title}' criada com sucesso na pasta '{folder}'."
-
-@tool
-async def list_obsidian_folders():
-    """Lista as pastas principais disponíveis no Vault do Obsidian."""
-    folders = await obsidian.list_folders()
-    return "Pastas disponíveis:\n" + "\n".join([f"- {f}" for f in folders]) if folders else "Nenhuma pasta encontrada."
-
-@tool
-async def delete_obsidian_item(relative_path: str):
-    """Remove um arquivo ou pasta do Vault do Obsidian."""
-    success = await obsidian.delete_item(relative_path, commit_message=f"Maeve: Removeu '{relative_path}'")
-    return f"Item '{relative_path}' removido." if success else f"Erro: Caminho '{relative_path}' não encontrado."
-
-@tool
-async def move_obsidian_item(old_path: str, new_path: str):
-    """Move ou renomeia um arquivo ou pasta dentro do Vault."""
-    success = await obsidian.move_item(old_path, new_path, commit_message=f"Maeve: Moveu '{old_path}' para '{new_path}'")
-    return f"Item movido para '{new_path}'." if success else f"Erro ao mover '{old_path}'."
-
-@tool
-async def cleanup_empty_obsidian_folders():
-    """Remove pastas vazias no Vault."""
-    removed = await obsidian.cleanup_empty_folders(commit_message="Maeve: Limpeza de pastas")
-    return "Pastas removidas:\n" + "\n".join([f"- {f}" for f in removed]) if removed else "Nenhuma pasta vazia."
-
-@tool
-async def list_obsidian_notes():
-    """Lista todas as notas no Vault."""
-    notes = await obsidian.list_all_notes()
-    return "Notas encontradas:\n" + "\n".join([f"- {n}" for n in notes]) if notes else "Nenhuma nota."
-
-@tool
-async def get_obsidian_note_details(relative_path: str):
-    """Retorna metadados de uma nota (título, links, YAML)."""
-    metadata = await obsidian.get_note_metadata(relative_path)
-    if not metadata: return f"Erro: Nota '{relative_path}' não encontrada."
-    fm_str = yaml.dump(metadata['frontmatter'], allow_unicode=True) if metadata['frontmatter'] else "Nenhum YAML"
-    return f"Título: {metadata['title']}\nLinks: {', '.join(metadata['links'])}\nYAML:\n{fm_str}"
-
-@tool
-async def get_obsidian_note_content(relative_path: str):
-    """Lê o conteúdo completo de uma nota."""
-    full_path = os.path.join(obsidian.vault_path, relative_path)
-    content = await obsidian.get_note_content(full_path)
-    return content if content else f"Erro ao ler '{relative_path}'."
-
-@tool
-async def sync_obsidian_knowledge():
-    """Sincroniza o Obsidian com o banco vetorial."""
-    try:
-        await obsidian.sync()
-        notes = await obsidian.list_all_notes()
-        texts, metadatas = [], []
-        for note_path in notes:
-            content = await obsidian.get_note_content(note_path)
-            if content.strip():
-                meta = await obsidian.get_note_metadata(note_path)
-                texts.append(f"Título: {meta['title']}\nConteúdo: {content}")
-                metadatas.append({"source": "obsidian", "path": meta['path'], "title": meta['title']})
-        if texts: await vector_db.upsert_documents(texts=texts, metadatas=metadatas)
-        return f"Sincronização concluída: {len(texts)} notas indexadas."
-    except Exception as e: return f"Erro na sincronização: {str(e)}"
-
-# --- Ferramentas TickTick ---
-
-@tool
-async def create_ticktick_task(
-    title: str, 
-    content: str = "", 
-    due_date: str = None, 
-    priority: int = 0,
-    project_id: str = None,
-    parent_id: str = None
-):
-    """
-    Cria uma tarefa ou subtarefa no TickTick.
-    
-    PRIORIDADES: 0: Nenhuma, 1: Baixa, 3: MÉDIA, 5: ALTA.
-    
-    SEQUÊNCIA OBRIGATÓRIA PARA SUBTAREFAS:
-    1. Primeiro, chame esta ferramenta para criar a TAREFA PAI (deixe parent_id como None).
-    2. PEGUE O ID retornado (ID_CRIADO: ...).
-    3. Chame esta ferramenta NOVAMENTE para cada subtarefa, passando o ID do pai no campo 'parent_id'.
-    NÃO tente criar pai e filhos na mesma chamada de ferramenta.
-    """
-    print(f"DEBUG [create_ticktick_task]: {title}, Priority={priority}, Parent={parent_id}")
-    try:
-        res = await ticktick.create_task(title, content, due_date, project_id, priority, parent_id)
-        task_id = res.get('id')
-        # Retorno curto e direto focado no ID para o LLM não se perder
-        return f"ID_CRIADO: {task_id}"
-    except Exception as e: return f"❌ Erro: {str(e)}"
-
-def _normalize_ticktick_date(date_str: str) -> str:
-    """Normaliza strings de data para ISO compatível com a API do TickTick."""
-    if not date_str:
-        return date_str
-    d = str(date_str).strip()
-    if len(d) == 10 and d.count("-") == 2:
-        return f"{d}T00:00:00-0300"
-    if "T" in d:
-        time_part = d.split("T")[1]
-        if "Z" not in time_part and "+" not in time_part and "-" not in time_part:
-            return f"{d}-0300"
-    elif "Z" not in d and "+" not in d and "-" not in d[10:]:
-        return f"{d}-0300"
-    return d
-
-@tool
-async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
-    """
-    ÚNICA ferramenta para atualizar tarefas no TickTick (seja 1 ou várias).
-    Use para mudar datas, títulos, projetos ou concluir tarefas.
-    Cada objeto DEVE ter: {"task_id": "...", "title": "...", "project_id": "..."}
-    Campos suportados: "due_date" (Fim), "start_date" (Início), "status", "priority".
-    DICA: Para Time Blocking (duração), envie datas de início e fim no mesmo dia com horários diferentes.
-    """
-    print(f"🔥 [BATCH_UPDATE] Iniciando com {len(tasks_to_update)} tarefas.")
-    try:
-        normalized = []
-        for t in tasks_to_update:
-            item = t.copy()
-            if "project_id" in item: item["projectId"] = item.pop("project_id")
-            
-            # Normalização de Datas (Time Blocking Support)
-            final_due = _normalize_ticktick_date(item.pop("due_date", None))
-            final_start = _normalize_ticktick_date(item.pop("start_date", None))
-
-            if final_due:
-                item["dueDate"] = final_due
-                item["startDate"] = final_start or final_due
-
-            normalized.append(item)
-            
-        results = await ticktick.batch_update_tasks(normalized)
-        successes = [r for r in results if r.get("status") == 200]
-        return f"✅ Processadas {len(results)} atualizações. Sucessos: {len(successes)}."
-    except Exception as e:
-        return f"❌ Erro no motor de lote: {str(e)}"
-
-@tool
-async def create_ticktick_project(name: str, color: str = None, view_mode: str = "list"):
-    """Cria um novo projeto (lista) no TickTick via API REST."""
-    print(f"DEBUG [create_ticktick_project]: {name}")
-    try:
-        res = await ticktick.create_project(name, color, view_mode)
-        return f"✅ Projeto criado! ID: {res.get('id')}"
-    except Exception as e: return f"❌ Erro: {str(e)}"
-
-@tool
-async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
-    """
-    Lista tarefas PENDENTES para ter uma visão geral.
-    date_filter: 'YYYY-MM-DD'.
-    Use esta ferramenta para LISTAR e IDENTIFICAR tarefas (pegar IDs).
-    Para ler o conteúdo completo/notas, use 'get_ticktick_item_details'.
-    """
-    print(f"DEBUG [get_ticktick_tasks]: Filtro={date_filter}, Projeto={project_id}")
-    try:
-        tasks = await ticktick.get_tasks(project_id=project_id)
-        if not tasks: return "Nenhuma tarefa pendente encontrada."
-        
-        # Filtro de data inteligente com suporte a 7 dias de lookback (tarefas atrasadas)
-        if date_filter:
-            try:
-                target_dt = datetime.strptime(date_filter[:10], "%Y-%m-%d").date()
-                start_lookback = target_dt - timedelta(days=7)
-                filtered = []
-                for t in tasks:
-                    due_raw = t.get('dueDate')
-                    if not due_raw:
-                        continue
-                    due_date_str = str(due_raw)[:10]
-                    try:
-                        task_dt = datetime.strptime(due_date_str, "%Y-%m-%d").date()
-                        if start_lookback <= task_dt <= target_dt:
-                            filtered.append(t)
-                    except ValueError:
-                        if date_filter in str(due_raw):
-                            filtered.append(t)
-                tasks = filtered
-            except Exception as e:
-                print(f"Fallback filtro data: {e}")
-                tasks = [t for t in tasks if t.get('dueDate') and date_filter in str(t['dueDate'])]
-        
-        if not tasks: return f"Nenhuma tarefa pendente para a data {date_filter}."
-        
-        total_count = len(tasks)
-        # Limita a 40 tarefas para não estourar contexto da IA
-        display_tasks = tasks[:40]
-        
-        # Retornamos o TOTAL explicitamente no topo para evitar alucinações de contagem
-        result = f"TOTAL ENCONTRADO: {total_count} itens pendentes.\n\n"
-        result += "\n".join([
-            f"- {t['title']} (Vence: {t.get('dueDate', 'Sem data')}) [ID: {t['id']}, Proj: {t['projectId']}, Kind: {t.get('kind', 'TASK')}]" 
-            for t in display_tasks
-        ])
-        
-        if total_count > 40:
-            result += f"\n\n... (Exibindo 40 de {total_count} itens por brevidade)."
-            
-        return result
-    except Exception as e:
-        return f"❌ Erro ao buscar tarefas: {str(e)}"
-
-@tool
-async def get_ticktick_item_details(item_id: str):
-    """
-    Obtém o conteúdo COMPLETO e detalhes de uma tarefa ou nota específica.
-    Use para ler o que está escrito dentro de uma nota antes de replicar no Obsidian.
-    """
-    try:
-        details = await ticktick.get_task_by_id(item_id)
-        return json.dumps(details, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return f"❌ Erro ao buscar detalhes: {str(e)}"
-
-@tool
-async def delete_ticktick_item(project_id: str, item_id: str):
-    """Remove definitivamente uma tarefa ou nota do TickTick."""
-    try:
-        success = await ticktick.delete_task(project_id, item_id)
-        return "✅ Item removido com sucesso." if success else "❌ Falha ao remover item."
-    except Exception as e:
-        return f"❌ Erro ao deletar: {str(e)}"
-
-@tool
-async def list_ticktick_structure(include_groups: bool = True):
-    """
-    Lista a estrutura de pastas (Grupos) e Listas (Projetos) do TickTick.
-    Use para se localizar e saber em qual lista criar ou buscar algo.
-    """
-    try:
-        projects = await ticktick.list_projects()
-        structure = "ESTRUTURA TICKTICK:\n"
-        
-        if include_groups:
-            groups = await ticktick.list_project_groups()
-            group_map = {g['id']: g['name'] for g in groups}
-            # Organiza por grupo
-            by_group = {}
-            for p in projects:
-                gid = p.get('groupId', 'no_group')
-                if gid not in by_group: by_group[gid] = []
-                by_group[gid].append(p)
-            
-            for gid, projs in by_group.items():
-                gname = group_map.get(gid, "Sem Pasta")
-                structure += f"\n📂 {gname}:\n"
-                for p in projs:
-                    structure += f"  - 📝 {p['name']} [ID: {p['id']}, Kind: {p.get('kind')}]\n"
-        else:
-            for p in projects:
-                structure += f"- 📝 {p['name']} [ID: {p['id']}, Kind: {p.get('kind')}]\n"
-                
-        return structure
-    except Exception as e:
-        return f"❌ Erro ao listar estrutura: {str(e)}"
-
-@tool
-async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
-    """Obtém métricas via MCP (habits, focus_records, tasks_completed)."""
-    print(f"DEBUG [get_ticktick_metrics]: {query_type}")
-    try:
-        if query_type == "habits": content = await ticktick.get_habits()
-        elif query_type == "focus_records": content = await ticktick.get_focus_records(start_date)
-        else: content = await ticktick.get_completed_tasks_history(start_date)
-        return f"Métricas via MCP:\n{content}"
-    except Exception as e: return f"❌ Erro MCP: {str(e)}"
-
-@tool
-async def batch_create_ticktick_tasks(tasks_list: List[Dict[str, Any]]):
-    """Cria múltiplas tarefas em lote no TickTick."""
-    try:
-        result = await ticktick.call_mcp_tool("batch_add_tasks", {"tasks": tasks_list})
-        return f"✅ {len(tasks_list)} tarefas criadas."
-    except Exception as e: return f"❌ Erro lote criação: {str(e)}"
-
-# --- Ferramentas de Lembrete ---
-
-@tool
-async def set_reminder(content: str, reminder_at: str, user_id: str = None, chat_id: str = None):
-    """
-    Agenda um lembrete customizado.
-    reminder_at: Formato ISO 'YYYY-MM-DDTHH:MM:SS-0300' ou 'YYYY-MM-DD'.
-    user_id e chat_id são opcionais e detectados automaticamente se omitidos.
-    """
-    try:
-        fallback_id = os.getenv("TELEGRAM_ALLOWED_USER_ID") or "default_user"
-        effective_user = user_id if (user_id and user_id != "unknown") else fallback_id
-        effective_chat = chat_id if (chat_id and chat_id != "unknown") else fallback_id
-        
-        normalized_time = _normalize_ticktick_date(reminder_at)
-        reminder_id = await db_service.create_reminder(effective_user, effective_chat, content, normalized_time)
-        return f"✅ Lembrete agendado com sucesso! [ID: {reminder_id}]"
-    except Exception as e:
-        return f"❌ Erro ao agendar lembrete: {str(e)}"
-
-@tool
-async def list_active_reminders(user_id: str = None):
-    """Lista todos os lembretes pendentes do usuário."""
-    try:
-        fallback_id = os.getenv("TELEGRAM_ALLOWED_USER_ID") or "default_user"
-        effective_user = user_id if (user_id and user_id != "unknown") else fallback_id
-        reminders = await db_service.list_user_reminders(effective_user)
-        if not reminders: return "Você não tem lembretes ativos."
-        return "Lembretes ativos:\n" + "\n".join([f"- {r[0]} em {r[1].strftime('%d/%m %H:%M')}" for r in reminders])
-    except Exception as e:
-        return f"❌ Erro ao listar lembretes: {str(e)}"
-
-# --- Ferramentas Web Search ---
-
-@tool
-async def web_search(query: str):
-    """
-    Realiza uma busca rápida na internet para fatos atuais ou informações gerais.
-    Ideal para perguntas como 'qual a previsão do tempo' ou 'quem venceu o jogo'.
-    """
-    # O logger aqui será capturado pelo TelegramService se quisermos feedback em tempo real
-    print(f"WEB_SEARCH_START: {query}") 
-    results = await search_service.search(query)
-    if not results or "error" in results[0]:
-        return f"Erro na pesquisa: {results[0].get('error') if results else 'Sem resultados'}"
-    
-    formatted = "\n".join([f"- {r['title']} ({r['url']}): {r['content'][:300]}..." for r in results])
-    return f"Resultados da Pesquisa Web:\n{formatted}"
-
-@tool
-async def deep_research(query: str):
-    """
-    Realiza uma pesquisa aprofundada na web para tópicos complexos.
-    Sintetiza informações de múltiplas fontes. Use quando o usuário pedir
-    uma 'investigação', 'estudo detalhado' ou 'pesquisa profunda'.
-    """
-    print(f"DEEP_RESEARCH_START: {query}")
-    synthesis = await search_service.deep_research(query)
-    return f"Síntese da Pesquisa Aprofundada:\n{synthesis}"
-
-@tool
-async def verify_task_creation(task_id: str):
-    """
-    Verifica se uma tarefa recém-criada realmente existe e em qual projeto ela caiu.
-    Use se você criou algo mas não tem certeza se deu certo.
-    """
-    try:
-        details = await ticktick.get_task_by_id(task_id)
-        if details and 'id' in details:
-            return f"✅ Tarefa confirmada! Ela está no projeto ID: {details.get('projectId')} com o título: '{details.get('title')}'"
-        return "❌ A tarefa não foi encontrada no servidor após a criação."
-    except Exception as e:
-        return f"❌ Erro na verificação: {str(e)}"
-
-tools = [
-    create_obsidian_note, list_obsidian_folders, delete_obsidian_item, 
-    move_obsidian_item, cleanup_empty_obsidian_folders, list_obsidian_notes,
-    get_obsidian_note_details, get_obsidian_note_content, sync_obsidian_knowledge,
-    create_ticktick_task, 
-    create_ticktick_project, 
+from src.agent.state import AgentState, IntentDomain
+from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE
+from src.services.registry import get_vector_db_service
+from src.domain.tasks import normalize_ticktick_date
+from src.agent.tools import (
+    ALL_TOOLS,
+    TASK_TOOLS,
+    KNOWLEDGE_TOOLS,
+    REMINDER_TOOLS,
+    SEARCH_TOOLS,
+    get_tools_for_intent,
+    # Re-export tools for backward compatibility
+    create_ticktick_task,
+    batch_update_ticktick_tasks,
+    create_ticktick_project,
     get_ticktick_tasks,
     get_ticktick_item_details,
     delete_ticktick_item,
     list_ticktick_structure,
     verify_task_creation,
-    get_ticktick_metrics_via_mcp, 
+    get_ticktick_metrics_via_mcp,
     batch_create_ticktick_tasks,
-    batch_update_ticktick_tasks,
-    set_reminder, list_active_reminders,
-    web_search, deep_research
-]
-tool_node = ToolNode(tools)
+    create_obsidian_note,
+    list_obsidian_folders,
+    delete_obsidian_item,
+    move_obsidian_item,
+    cleanup_empty_obsidian_folders,
+    list_obsidian_notes,
+    get_obsidian_note_details,
+    get_obsidian_note_content,
+    sync_obsidian_knowledge,
+    set_reminder,
+    list_active_reminders,
+    web_search,
+    deep_research,
+)
+
+load_dotenv()
+
+logger = logging.getLogger("MaeveEngine")
+
+# Alias para compatibilidade retroativa com suíte de testes
+_normalize_ticktick_date = normalize_ticktick_date
+tools = ALL_TOOLS
+tool_node = ToolNode(ALL_TOOLS)
+
+# --- Funções Utilitárias de Pipeline ---
+
+def _sanitize_message_history(raw_messages: List[BaseMessage], limit: int = 20) -> List[BaseMessage]:
+    """
+    Sanitiza o histórico de mensagens:
+    1. Trunca na janela desejada sem cortar sequências no meio de chamadas de ferramentas.
+    2. Remove ToolMessages órfãs no início para evitar loops e erros 400.
+    3. Cura AIMessages pendentes sem resposta de ferramenta correspondente.
+    """
+    if len(raw_messages) <= limit:
+        subset = list(raw_messages)
+    else:
+        subset = list(raw_messages[-limit:])
+        while subset and isinstance(subset[0], ToolMessage) and limit < len(raw_messages):
+            limit += 1
+            subset = list(raw_messages[-limit:])
+
+    # Elimina ToolMessages órfãs na cabeça da lista
+    while subset and isinstance(subset[0], ToolMessage):
+        subset = subset[1:]
+
+    # Remove chamada pendente no final se for o último elemento
+    if subset and isinstance(subset[-1], AIMessage) and subset[-1].tool_calls:
+        subset = subset[:-1]
+
+    # Cura mensagens intermediárias sem ToolMessage
+    final_messages: List[BaseMessage] = []
+    i = 0
+    while i < len(subset):
+        msg = subset[i]
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            if i + 1 < len(subset) and isinstance(subset[i + 1], ToolMessage):
+                final_messages.append(msg)
+            else:
+                final_messages.append(AIMessage(content=msg.content or "Processando...", tool_calls=[]))
+        else:
+            final_messages.append(msg)
+        i += 1
+
+    return final_messages
+
+def _resolve_temporal_context() -> Dict[str, str]:
+    """Resolve os metadados temporais contextuais (fuso horário local)."""
+    now_dt = datetime.now()
+    dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+    hour = now_dt.hour
+
+    if 5 <= hour < 12:
+        period = "manhã"
+    elif 12 <= hour < 18:
+        period = "tarde"
+    elif 18 <= hour < 24:
+        period = "noite"
+    else:
+        period = "madrugada"
+
+    return {
+        "date": now_dt.strftime('%d/%m/%Y'),
+        "time": now_dt.strftime('%H:%M'),
+        "day_of_week": dias[now_dt.weekday()],
+        "period": period,
+    }
+
 
 class MaeveAgent:
+    """
+    Orquestrador Central da Maeve (LangGraph StateGraph).
+    Responsabilidade Única: Gerenciar a máquina de estados, roteamento por intenção e execução do modelo.
+    """
     def __init__(self, checkpointer=None):
-        # Modelos disponíveis com suporte a variáveis de ambiente
         fast_model_name = os.getenv("MAEVE_FAST_MODEL", "gpt-4o-mini")
         smart_model_name = os.getenv("MAEVE_SMART_MODEL", "gpt-4o")
 
-        self.fast_model = ChatOpenAI(model=fast_model_name, temperature=0, max_tokens=2048).bind_tools(tools)
-        self.smart_model = ChatOpenAI(model=smart_model_name, temperature=0, max_tokens=4096).bind_tools(tools)
+        # Modelos base não acoplados a ferramentas estáticas
+        self.fast_model_base = ChatOpenAI(model=fast_model_name, temperature=0, max_tokens=2048)
+        self.smart_model_base = ChatOpenAI(model=smart_model_name, temperature=0, max_tokens=4096)
         self.router_model = ChatOpenAI(model=fast_model_name, temperature=0, max_tokens=256)
-        
-        # O grafo agora inclui roteamento
+
+        # Cache de modelos estáticos legados para compatibilidade
+        self.fast_model = self.fast_model_base.bind_tools(ALL_TOOLS)
+        self.smart_model = self.smart_model_base.bind_tools(ALL_TOOLS)
+
+        self._vector_db = get_vector_db_service()
         self._graph = self._build_graph(checkpointer)
 
     def _build_graph(self, checkpointer):
         workflow = StateGraph(AgentState)
-        
-        # Nós principais
+
         workflow.add_node("router", self._router_node)
         workflow.add_node("call_model", self._call_model_node)
         workflow.add_node("tools", tool_node)
-        
-        # Fluxo: Começa pelo Router que decide a "inteligência" necessária
+
         workflow.set_entry_point("router")
         workflow.add_edge("router", "call_model")
-        
-        # Loop de ferramentas padrão
-        workflow.add_conditional_edges("call_model", lambda x: "tools" if x['messages'][-1].tool_calls else END)
+
+        workflow.add_conditional_edges(
+            "call_model",
+            lambda x: "tools" if x['messages'][-1].tool_calls else END
+        )
         workflow.add_edge("tools", "call_model")
-        
+
         return workflow.compile(checkpointer=checkpointer)
 
-    async def _router_node(self, state: AgentState):
+    async def _router_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Analisa o pedido do usuário e decide se precisamos do motor Fast ou Smart.
+        Classifica a intenção (domínio) e complexidade do pedido.
+        Preenche AgentState.current_intent e AgentState.routing_metadata.
         """
         last_msg = next((m for m in reversed(state['messages']) if isinstance(m, HumanMessage)), None)
         if not last_msg:
-            return {"routing_metadata": {"model": "fast", "reason": "No human message"}}
+            return {
+                "current_intent": "chat",
+                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "chat", "reason": "No human message"}
+            }
 
-        # Heurística Fast-Path: Economiza latência (~300-500ms) e tokens para saudações e mensagens curtas
         text_clean = str(last_msg.content).strip().lower()
+
+        # Heurística Fast-Path: O(1) para saudações e mensagens triviais
         simple_patterns = r"^(oi|olá|ola|bom dia|boa tarde|boa noite|valeu|obrigado|ok|beleza|show|tchau|obg|sim|não|nao)[\.\!\?]*$"
         if len(text_clean) <= 20 or re.match(simple_patterns, text_clean):
             print(f"[Router Fast-Path]: Mensagem simples ('{text_clean[:30]}') -> Usando FAST sem chamar LLM.")
-            return {"routing_metadata": {"complexity": 1, "model": "fast", "reason": "Heuristic fast-path: trivial query/greeting"}}
+            return {
+                "current_intent": "chat",
+                "routing_metadata": {
+                    "complexity": 1,
+                    "model": "fast",
+                    "domain": "chat",
+                    "reason": "Heuristic fast-path: trivial query/greeting"
+                }
+            }
 
-        # Prompt rápido para classificação
         routing_prompt = f"""
-        Analise o pedido abaixo e classifique a complexidade de 1 a 5:
-        1-2: Simples (Saudações, perguntas curtas, listar algo, criar 1 tarefa simples).
-        3-5: Complexo (Criar estruturas de tarefas/subtarefas, resumir várias notas, lógica multi-passos, planejamento).
-        
-        Responda APENAS em JSON: {{"complexity": int, "model": "fast"|"smart", "reason": "string"}}
-        
+        Analise o pedido abaixo e responda APENAS em JSON no formato:
+        {{
+            "complexity": int (1 a 5),
+            "model": "fast" | "smart",
+            "domain": "tasks" | "knowledge" | "search" | "reminders" | "chat" | "general",
+            "reason": "string curta"
+        }}
+
+        Diretrizes de Domínio:
+        - tasks: TickTick, listas de afazeres, subtarefas, projetos, time-blocking, hábitos, conclusão.
+        - knowledge: Obsidian, notas, Vault, pastas de notas, resumos de conhecimento pessoal.
+        - search: Pesquisa na web, notícias, fatos em tempo real, deep research.
+        - reminders: Lembretes temporais no Telegram ("me lembra amanhã às 10h").
+        - chat: Conversas reflexivas, saudações, bate-papo sem necessidade de ferramentas.
+        - general: Pedidos híbridos que misturam múltiplos domínios.
+
+        Complexidade:
+        1-2 (fast): Comandos diretos, criação simples, saudações, listagens.
+        3-5 (smart): Planejamento, múltiplos passos, raciocínio profundo, consolidação.
+
         Pedido: {last_msg.content}
         """
-        
+
         try:
-            # Reutiliza a instância dedicada de router_model (sem recriar a cada mensagem)
             raw_decision = await self.router_model.ainvoke(routing_prompt, config={"tags": ["router_llm"]})
             content_str = str(raw_decision.content).strip()
-            
-            # Extração robusta via Regex para evitar falhas com comentários extras do LLM
+
             json_match = re.search(r"\{.*?\}", content_str, re.DOTALL)
             if json_match:
                 decision = json.loads(json_match.group(0))
@@ -482,112 +224,81 @@ class MaeveAgent:
                 decision = json.loads(clean_json)
 
             if not isinstance(decision, dict) or "model" not in decision:
-                decision = {"complexity": 1, "model": "fast", "reason": "Formato não-padrão"}
-            
-            print(f"[Router]: Complexidade {decision.get('complexity', 1)} -> Usando {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
-            return {"routing_metadata": decision}
+                decision = {"complexity": 1, "model": "fast", "domain": "general", "reason": "Formato não-padrão"}
+
+            domain: IntentDomain = decision.get("domain", "general")
+            print(f"[Router]: Complexidade {decision.get('complexity', 1)} | Domínio: {domain.upper()} -> {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
+
+            return {
+                "current_intent": domain,
+                "routing_metadata": decision
+            }
         except Exception as e:
-            print(f"[Router Warning]: Erro no Router: {e}. Defaulting to Fast.")
-            return {"routing_metadata": {"model": "fast", "reason": "Fallback due to error"}}
+            print(f"[Router Warning]: Erro no Router: {e}. Defaulting to Fast/General.")
+            return {
+                "current_intent": "general",
+                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "general", "reason": "Fallback due to error"}
+            }
 
-    async def _call_model_node(self, state: AgentState):
-        from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
-        
-        # 1. Escolha do Modelo baseado no Roteamento
-        routing = state.get("routing_metadata") or {"model": "fast"}
-        llm = self.smart_model if routing.get("model") == "smart" else self.fast_model
-        
-        # 2. Trimming e Limpeza de Mensagens
-        raw_messages = state['messages']
-        
-        def get_valid_sequence(msgs, limit=20):
-            if len(msgs) <= limit:
-                subset = list(msgs)
-            else:
-                subset = list(msgs[-limit:])
-                while subset and isinstance(subset[0], ToolMessage) and limit < len(msgs):
-                    limit += 1
-                    subset = list(msgs[-limit:])
-            
-            # Remove ToolMessages órfãs no início para evitar loop e rejeição da API
-            while subset and isinstance(subset[0], ToolMessage):
-                subset = subset[1:]
+    async def _call_model_node(self, state: AgentState) -> Dict[str, Any]:
+        """
+        Executa a inferência aplicando Dynamic Tool Binding de acordo com o domínio ativo.
+        """
+        routing = state.get("routing_metadata") or {"model": "fast", "domain": "general"}
+        current_intent = state.get("current_intent") or routing.get("domain", "general")
 
-            if subset and isinstance(subset[-1], AIMessage) and subset[-1].tool_calls:
-                subset = subset[:-1]
-            return subset
+        # 1. Dynamic Tool Binding: Injeta apenas ferramentas do domínio ativo (elimina Tool Bleed)
+        active_tools = get_tools_for_intent(current_intent)
+        base_model = self.smart_model_base if routing.get("model") == "smart" else self.fast_model_base
 
-        trimmed_messages = get_valid_sequence(raw_messages, limit=20)
+        if active_tools:
+            llm = base_model.bind_tools(active_tools)
+        else:
+            llm = base_model
 
-        # 3. Sanitização de Histórico (Cura contra erros 400)
-        final_messages = []
-        i = 0
-        while i < len(trimmed_messages):
-            msg = trimmed_messages[i]
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                if i + 1 < len(trimmed_messages) and isinstance(trimmed_messages[i+1], ToolMessage):
-                    final_messages.append(msg)
-                else:
-                    msg_clean = AIMessage(content=msg.content or "Processando...", tool_calls=[])
-                    final_messages.append(msg_clean)
-            else:
-                final_messages.append(msg)
-            i += 1
+        # 2. Sanitização do Histórico
+        final_messages = _sanitize_message_history(state['messages'], limit=20)
 
-        # 4. Contexto
+        # 3. Extração de Contexto do Usuário
         user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
         user_id = user_msg.additional_kwargs.get("user_id", "unknown") if user_msg else "unknown"
         chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
-
         last_query = user_msg.content if user_msg else ""
-        
-        # P4 Optimization: Busca RAG seletiva para evitar embedding/search em mensagens triviais
-        should_search_rag = bool(last_query)
+
+        # 4. Busca Seletiva no RAG (Qdrant)
+        # Bypassa RAG se for conversa trivial ou se domínio for estritamente tasks/reminders sem busca
+        should_search_rag = bool(last_query) and current_intent in ["knowledge", "general"]
         if should_search_rag and routing.get("complexity", 1) == 1:
             clean_q = str(last_query).strip().lower()
-            trivial_greetings = {
-                "oi", "ola", "olá", "bom dia", "boa tarde", "boa noite",
-                "opa", "e ai", "e aí", "valeu", "obrigado", "obrigada",
-                "ok", "beleza", "blz", "tchau", "ate mais", "até mais",
-                "sim", "não", "nao", "show", "perfeito"
-            }
-            if clean_q in trivial_greetings or len(clean_q) < 4:
+            if len(clean_q) < 4:
                 should_search_rag = False
 
-        context_docs = await vector_db.search_context(last_query, limit=3) if should_search_rag else []
-        context_str = "\n".join([f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs])
-        
-        # Contexto Temporal
-        now_dt = datetime.now()
-        date_str = now_dt.strftime('%d/%m/%Y')
-        time_str = now_dt.strftime('%H:%M')
-        dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
-        day_of_week = dias[now_dt.weekday()]
-        
-        hour = now_dt.hour
-        if 5 <= hour < 12: period = "manhã"
-        elif 12 <= hour < 18: period = "tarde"
-        elif 18 <= hour < 24: period = "noite"
-        else: period = "madrugada"
+        context_docs = await self._vector_db.search_context(last_query, limit=3) if should_search_rag else []
+        context_str = "\n".join([
+            f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs
+        ])
 
+        # 5. Compilação de Contexto Temporal e System Prompt
+        temporal = _resolve_temporal_context()
         system_content = SYSTEM_PROMPT_TEMPLATE.format(
-            date=date_str,
-            time=time_str,
-            day_of_week=day_of_week,
-            period=period,
+            date=temporal["date"],
+            time=temporal["time"],
+            day_of_week=temporal["day_of_week"],
+            period=temporal["period"],
             user_id=user_id,
             chat_id=chat_id,
             obsidian_context=context_str
         )
-        
-        # 5. Invocação
+
+        # 6. Invocação com Fallback Resiliente
         history = [m for m in final_messages if not isinstance(m, SystemMessage)]
-        
+        prompt_messages = [SystemMessage(content=system_content)] + history
+
         try:
-            response = await llm.ainvoke([SystemMessage(content=system_content)] + history)
+            response = await llm.ainvoke(prompt_messages)
             return {"messages": [response]}
         except Exception as e:
-            print(f"❌ Erro OpenAI: {e}")
+            print(f"❌ Erro na invocação LLM: {e}")
             if "400" in str(e):
                 last_human = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)
                 fallback_history = [last_human] if last_human else []
@@ -595,18 +306,19 @@ class MaeveAgent:
             raise e
 
     async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):
-        """Versão que retorna o stream de eventos para detecção de ferramentas."""
+        """Retorna stream de eventos para visualização e feedback no Telegram."""
         config = {"configurable": {"thread_id": thread_id}}
         input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
-        
+
         async for event in self._graph.astream_events({"messages": [input_msg]}, config=config, version="v1"):
             yield event
 
     async def run(self, user_input: Any, thread_id: str = "default-thread") -> str:
+        """Execução direta assíncrona retornando a resposta em texto."""
         config = {"configurable": {"thread_id": thread_id}}
-        # Aceita tanto string quanto BaseMessage (para passar additional_kwargs)
         input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
         result = await self._graph.ainvoke({"messages": [input_msg]}, config=config)
         for m in reversed(result["messages"]):
-            if hasattr(m, "content") and m.content: return m.content
+            if hasattr(m, "content") and m.content:
+                return m.content
         return "Processado."

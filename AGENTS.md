@@ -145,15 +145,35 @@ context-aware-task-agent/
 ├── obsidian_vault/        # Git-synced Obsidian Vault (local mount)
 ├── requirements.txt
 └── src/
-    ├── main.py            # FastAPI app entry point, startup orchestration
-    ├── cli.py             # Rich terminal CLI client
+    ├── main.py            # FastAPI Composition Root (lifespan, router mounting)
+    ├── cli.py             # Rich terminal CLI client (v0.4.0)
     ├── debug_tasks.py     # TickTick debugging utility
     ├── setup_ticktick.py  # OAuth2 setup helper
+    ├── domain/            # Pure Core Business Domain Layer (Hexagonal Core)
+    │   ├── __init__.py    # Domain exports (TaskResult, KnowledgeResult, etc.)
+    │   ├── models.py      # Domain DTOs, Enums and Result contracts
+    │   ├── tasks.py       # TaskDomainService (TickTick pure domain rules)
+    │   ├── knowledge.py   # KnowledgeDomainService (Obsidian pure domain rules)
+    │   ├── reminders.py   # ReminderDomainService (Domain scheduling rules)
+    │   └── search.py      # SearchDomainService (Web search & research domain)
     ├── agent/
-    │   ├── engine.py      # MaeveAgent: LangGraph StateGraph, Router, Tools
+    │   ├── engine.py      # MaeveAgent: LangGraph StateGraph & Dynamic Tool Routing
     │   ├── prompts.py     # System prompt templates & persona definition
-    │   └── state.py       # AgentState TypedDict definition
-    ├── api/               # (Empty — reserved for REST endpoint refactoring)
+    │   ├── state.py       # AgentState TypedDict & IntentDomain definition
+    │   └── tools/         # Inbound Adapters (Thin LangGraph @tool wrappers)
+    │       ├── __init__.py        # Registry & dynamic tool binding by intent
+    │       ├── task_tools.py      # Thin adapters calling TaskDomainService
+    │       ├── knowledge_tools.py # Thin adapters calling KnowledgeDomainService
+    │       ├── reminder_tools.py  # Thin adapters calling ReminderDomainService
+    │       └── search_tools.py    # Thin adapters calling SearchDomainService
+    ├── api/               # Modular REST endpoints (Inbound HTTP Adapters)
+    │   ├── __init__.py    # Router exports
+    │   ├── deps.py        # API key authentication dependencies
+    │   └── routes/
+    │       ├── __init__.py # Aggregated API router
+    │       ├── health.py   # GET / and GET /health
+    │       ├── chat.py     # POST /chat
+    │       └── sync.py     # POST /sync/obsidian
     ├── models/
     │   └── schemas.py     # Pydantic request/response models
     ├── services/
@@ -166,7 +186,8 @@ context-aware-task-agent/
     │   ├── ticktick.py    # TickTick REST API + MCP JSON-RPC client
     │   └── vector_db.py   # Qdrant async client: embeddings & search
     └── test/
-        └── test_bugfixes_regression.py # Comprehensive regression test suite
+        ├── test_bugfixes_regression.py # Comprehensive regression test suite
+        └── test_domain_services.py     # Domain services & dynamic tool routing suite
 ```
 
 ---
@@ -179,11 +200,11 @@ context-aware-task-agent/
 
 | ID | Severity | File(s) | Issue | Status & Fix |
 |:---|:---------|:--------|:------|:-------------|
-| A1 | 🔴 High | `engine.py` | **God Module & Monolithic Tool Bleed.** 613 linhas acumulando 22 ferramentas acopladas ao LangGraph, RAG, sanitização de histórico e orquestração. Provoca Tool Bleed e inviabiliza reuso no MCP. | 🔨 **Especificado:** Refatoração em Arquitetura Limpa (Domain Actions desacopladas em `src/domain/`, Adaptadores de Protocolo para LangGraph e FastMCP, e Intent-Based Dynamic Tool Routing). |
+| A1 | 🔴 High | `engine.py` | **God Module & Monolithic Tool Bleed.** 613 linhas acumulando 22 ferramentas acopladas ao LangGraph, RAG, sanitização de histórico e orquestração. Provoca Tool Bleed e inviabiliza reuso no MCP. | ✅ **Resolvido (Sprints 6, 7, 8).** Arquitetura Limpa implementada: Camada de Domínio Pura (`src/domain/`), adaptadores finos `@tool` (`src/agent/tools/`), e Intent-Based Dynamic Tool Routing no `engine.py`. Redução de 613 para 264 linhas e economia de ~88% de tokens de ferramentas por turno (de ~3.500 para ~400 tokens). |
 | A2 | 🔴 High | `engine.py`, `main.py` | **Duplicate service instantiation.** Stateful singletons duplicated. | ✅ **Resolvido.** Criado `src/services/registry.py` com singletons lazy desacoplados. |
 | A3 | 🟡 Medium | `telegram_bot.py` | **Circular imports.** `from src.main import ...` inside methods. | ✅ **Resolvido.** `telegram_bot.py` consome dependências via `registry.py`. |
-| A4 | 🟡 Medium | `api/` directory | **Empty module.** FastAPI routes inline in `main.py`. | ⏳ Reservado para migração de rotas REST. |
-| A5 | 🟡 Medium | `state.py` | **`current_intent` field unused.** Defined in `AgentState`. | ⏳ Mantido para intent tracking da Fase 3. |
+| A4 | 🟡 Medium | `api/` directory | **Empty module.** FastAPI routes inline in `main.py`. | ✅ **Resolvido (Sprint 9).** Rotas REST modularizadas em `src/api/routes/` (`health.py`, `chat.py`, `sync.py`) com injeção de dependências em `deps.py`. `main.py` reduzido a 83 linhas como Composition Root. |
+| A5 | 🟡 Medium | `state.py` | **`current_intent` field unused.** Defined in `AgentState`. | ✅ **Resolvido (Sprint 7).** `IntentDomain` tipado estritamente e `current_intent` ativamente preenchido pelo router para orquestrar a injeção dinâmica de ferramentas. |
 | A6 | 🟢 Low | `notion.py` | **Dead code.** Notion migration artifact. | ✅ **Resolvido.** Arquivo e dependências removidos. |
 | A7 | 🟢 Low | `chat.py` | **Superseded by `cli.py`.** Legacy sync chat client. | ✅ **Resolvido.** Arquivo removido via Git. |
 
