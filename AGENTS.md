@@ -254,6 +254,9 @@ context-aware-task-agent/
 | B14 | 🟡 High | `services/database.py` | **Dangling AsyncConnectionPool Tasks & Supabase SNI Break.** Falhas no setup do checkpointer descartavam `self.pool = None` sem `await pool.close()`, gerando `asyncio - ERROR - Task was destroyed but it is pending!` pelos workers do `psycopg_pool` ao rodar o garbage collector. Além disso, substituir hostname por IPv4 quebrava o roteamento SNI e validação SSL da Supabase. | ✅ **Resolvido.** Conexão direta via parâmetro `hostaddr` preservando o hostname para SNI/SSL, e encerramento garantido (`await pool.close()`) no bloco `except` e no método `close()` do `DatabaseService`. |
 | B15 | 🟡 High | `services/telegram_bot.py`, `agent/prompts.py` | **Missing Telegram Markdown Formatting & Entity Parsing Errors.** Mensagens finais eram enviadas sem o parâmetro `parse_mode="Markdown"` no `_send_long_message`, fazendo com que todo o Markdown (asteriscos, crases, listas) fosse exibido em texto puro sem formatação visual. Além disso, a formatação nativa do Telegram Markdown v1 diverge do Markdown padrão (`*bold*` vs `**bold**`, ausência de suporte a `# headers`). | ✅ **Resolvido.** Implementada a função de normalização `format_telegram_markdown` em `telegram_bot.py` (converte headers para negrito, normaliza `**` para `*` e protege blocos de código), ativado `parse_mode="Markdown"` com fallback para texto puro em caso de erro de entidades, e prompts do sistema atualizados com as regras estritas da plataforma. |
 | B16 | 🔴 Critical | `services/obsidian.py`, `domain/knowledge.py` | **Obsidian Git Push Refspec Mismatch & Unpushed Commits (`src refspec main does not match any`).** Ao inicializar o Vault via `git init` no container Linux, o Git criava a branch local padrão `master`. Ao executar `git push origin main`, ocorria o erro `error: src refspec main does not match any`. Como o commit era gravado antes do push, a nota ficava presa localmente no container sem sincronizar para o GitHub. | ✅ **Resolvido.** Implementado `_ensure_branch` (alinha automaticamente para `main` via `git branch -M main`), detecção de commits pendentes via `_has_unpushed_commits`, push explícito com `git push origin HEAD:main` e envio proativo no fluxo de `sync_knowledge`. |
+| B17 | 🟡 High | `services/telegram_bot.py`, `agent/prompts.py` | **Telegram Markdown Truncation & Single Giant Message Bloat.** Respostas longas excediam o limite de tokens ou eram despejadas em um único balão maciço no Telegram, com quebras de sintaxe Markdown quando truncadas. | ✅ **Resolvido.** Fatiamento semântico (`split_into_semantic_chunks`) com limites humanos (800-1200 chars), cura de tags Markdown em fronteiras (`_heal_markdown_boundary`), typing indicator com pacing de 1.0s e expansão de tokens (`max_tokens=4096`). |
+| B18 | 🔴 Critical | `services/obsidian.py`, `domain/knowledge.py`, `agent/engine.py` | **Obsidian Batch Operation Network Overhead & Recursion Limit Exhaustion.** Solicitações de manipulação em massa (ex: mover 31 notas) disparavam 31 commits e pushes SSH isolados, causando concorrência no `index.lock` e ultrapassando o `recursion_limit` do LangGraph. | ✅ **Resolvido.** Implementado `batch_move_items` com commit/push único atômico no Git, adaptador `batch_move_obsidian_notes` e elevação do `recursion_limit` para 100 no LangGraph. |
+| B19 | 🔴 Critical | `services/database.py`, `main.py` | **Supabase Checkpointer Migration Active Transaction Failure & Volatile Memory Fallback.** O `AsyncConnectionPool` do `psycopg 3` iniciava sem `"autocommit": True`. Durante o setup do `AsyncPostgresSaver`, as migrações 6 a 8 executavam `CREATE INDEX CONCURRENTLY`, o que é rejeitado pelo PostgreSQL dentro de transações ativas (`ActiveSqlTransaction`). O `main.py` capturava a falha e fazia fallback silencioso para `checkpointer=None`, executando a Maeve 100% em memória volátil e mantendo as tabelas do Supabase (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`) vazias (0 registros). | ✅ **Resolvido.** Configurado `"autocommit": True` nas `kwargs` do `AsyncConnectionPool`, migrado logging para `logging.getLogger` (eliminando falhas de unicode com prints de emojis), executadas com sucesso todas as 10 migrações do LangGraph e validada a persistência contínua de threads no Supabase. |
 
 ### 5.5 Testing & Observability Gaps
 
@@ -581,3 +584,38 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
 
 #### 3. Qualidade & Testes de Regressão
 - Suíte `test_domain_services.py` e `test_bugfixes_regression.py` atualizadas com testes específicos para fatiamento semântico, cura de tags Markdown e movimentação atômica em lote com um único push Git (100% aprovados).
+
+---
+
+### 9.3 Sprint 12: Diagnóstico & Ativação da Memória Conversacional Persistente no Supabase (B19) (2026-09-04)
+
+> **Objetivo:** Resolver a ausência de dados no Supabase e garantir que o checkpointer assíncrono do LangGraph grave o histórico das conversas e checkpoints de execução de forma resiliente e persistente.
+
+#### 1. Diagnóstico Forense da Conexão e Tabelas (B19)
+- **Sintoma:** O dashboard do Supabase indicava 0 registros nas tabelas `checkpoints`, `checkpoint_blobs` e `checkpoint_writes`, mesmo após dezenas de interações da Maeve via Telegram.
+- **Investigação:**
+  - A conectividade de rede com o pooler da Supabase (`aws-1-sa-east-1.pooler.supabase.com:5432`) estava funcional e as tabelas existiam no schema `public`.
+  - O pool `AsyncConnectionPool` do `psycopg 3` foi configurado sem `"autocommit": True` (`kwargs={"prepare_threshold": 0}`). No psycopg 3, o modo padrão é transacional (`autocommit=False`), abrindo blocos de transação automáticos.
+  - Durante o lifespan da aplicação (`main.py`), ao invocar `await self._checkpointer.setup()`, o `AsyncPostgresSaver` executa 10 migrações estruturais. As migrações 6, 7 e 8 contêm `CREATE INDEX CONCURRENTLY IF NOT EXISTS ...`.
+  - O PostgreSQL rejeita terminantemente índices concorrentes dentro de transações ativas: `psycopg.errors.ActiveSqlTransaction: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`.
+  - O bloco `try...except` do `main.py` capturava a falha, logava aviso e inicializava `MaeveAgent(checkpointer=None)`.
+  - Como resultado, a aplicação fazia fallback transparente para memória volátil in-memory a cada boot, operando no Telegram sem erros visíveis, porém sem persistir absolutamente nada no Supabase.
+
+#### 2. Implementação & Correções Técnicas
+- **Autocommit no Connection Pool:** Adicionado `"autocommit": True` às `kwargs` do `AsyncConnectionPool` em `src/services/database.py`:
+  ```python
+  self.pool = AsyncConnectionPool(
+      conninfo=conn_info,
+      max_size=10,
+      kwargs={"autocommit": True, "prepare_threshold": 0},
+      open=False,
+      reconnect_timeout=10,
+      check=AsyncConnectionPool.check_connection
+  )
+  ```
+- **Saneamento de Logging:** Substituídos `print` crus com emojis por `logger = logging.getLogger("DatabaseService")`, eliminando riscos de `UnicodeEncodeError` em consoles Windows e ambientes com codificação restrita.
+- **Validação de Migrações:** Executadas as migrações completas do `AsyncPostgresSaver`, registrando os 10 passos na tabela `checkpoint_migrations`.
+- **Verificação de Escrita em Produção:** Teste de ponta a ponta com `agent.run(..., thread_id=...)` confirmou gravação imediata de checkpoints nas tabelas `checkpoints`, `checkpoint_blobs` e `checkpoint_writes`.
+
+#### 3. Qualidade & Testes de Regressão
+- Suíte completa de testes unitários e de regressão executada com 100% de sucesso.

@@ -2,10 +2,13 @@ import os
 import asyncio
 import socket
 import json
+import logging
 import urllib.parse as urlparse
 from typing import Any
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+logger = logging.getLogger("DatabaseService")
 
 class DatabaseService:
     """
@@ -31,9 +34,9 @@ class DatabaseService:
                     # Mantém o hostname original para não quebrar SNI / SSL na Supabase
                     # e injeta hostaddr={ipv4} para conectar direto sem travar DNS
                     conn_info += ("&" if "?" in conn_info else "?") + f"hostaddr={ipv4}"
-                    print(f"📡 DNS: {url.hostname} -> hostaddr={ipv4}")
+                    logger.info("DNS: %s -> hostaddr=%s", url.hostname, ipv4)
             except Exception as e:
-                print(f"⚠️ DNS Bypass: {e}")
+                logger.warning("DNS Bypass: %s", e)
 
             # 2. Configurações de estabilidade
             if "sslmode" not in conn_info:
@@ -42,13 +45,13 @@ class DatabaseService:
             self.pool = AsyncConnectionPool(
                 conninfo=conn_info,
                 max_size=10,
-                kwargs={"prepare_threshold": 0},
+                kwargs={"autocommit": True, "prepare_threshold": 0},
                 open=False,
                 reconnect_timeout=10,
                 check=AsyncConnectionPool.check_connection
             )
             await self.pool.open()
-            print("✅ Conexão SQL ativa.")
+            logger.info("Conexão SQL ativa com Supabase.")
                 
         return self.pool
 
@@ -64,7 +67,7 @@ class DatabaseService:
                 await self._checkpointer.setup()
             return self._checkpointer
         except Exception as e:
-            print(f"❌ Erro ao obter checkpointer: {e}")
+            logger.error("Erro ao obter checkpointer: %s", e)
             if self.pool is not None:
                 try:
                     await self.pool.close()
@@ -106,14 +109,14 @@ class DatabaseService:
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                print("✅ Tabelas customizadas verificadas/criadas.")
+                logger.info("Tabelas customizadas verificadas/criadas no Supabase.")
 
     async def close(self):
         if self.pool:
             try:
                 await self.pool.close()
             except Exception as e:
-                print(f"⚠️ Erro ao fechar Database pool: {e}")
+                logger.warning("Erro ao fechar Database pool: %s", e)
             finally:
                 self.pool = None
                 self._checkpointer = None
