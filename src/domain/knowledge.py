@@ -127,6 +127,11 @@ class KnowledgeDomainService:
         """Sincroniza o Obsidian via Git pull e reindexa o Vault no Qdrant."""
         try:
             await self.obsidian.sync()
+            # Garante envio de quaisquer commits locais pendentes (ex: criados anteriormente sem push)
+            try:
+                await self.obsidian.push("Maeve: Sincronização de notas pendentes")
+            except Exception as push_err:
+                print(f"Aviso ao verificar commits pendentes no sync: {push_err}")
             notes = await self.obsidian.list_all_notes()
             texts, metadatas = [], []
             for note_path in notes:

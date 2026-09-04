@@ -114,6 +114,42 @@ class ObsidianService:
         """Executa comando git sem bloquear o Event Loop do asyncio."""
         return await asyncio.to_thread(self._run_git_sync, args)
 
+    async def _ensure_branch(self) -> str:
+        """
+        Garante que o repositório local esteja na branch 'main' e alinhado com o remoto.
+        Se a branch local for 'master' (padrão antigo do git init),
+        renomeia automaticamente para 'main' via 'git branch -M main'.
+        """
+        try:
+            current = (await self._run_git(["branch", "--show-current"])).strip()
+            if not current:
+                branches_output = await self._run_git(["branch"])
+                if "main" in branches_output:
+                    await self._run_git(["checkout", "main"])
+                    current = "main"
+                elif "master" in branches_output:
+                    await self._run_git(["branch", "-M", "main"])
+                    current = "main"
+                else:
+                    await self._run_git(["checkout", "-B", "main"])
+                    current = "main"
+            elif current == "master":
+                print("Alinhando branch local de 'master' para 'main'...")
+                await self._run_git(["branch", "-M", "main"])
+                current = "main"
+            return current or "main"
+        except Exception as e:
+            print(f"Aviso em _ensure_branch: {e}")
+            return "main"
+
+    async def _has_unpushed_commits(self, branch: str = "main") -> bool:
+        """Verifica se existem commits locais pendentes de envio ao remoto."""
+        try:
+            output = await self._run_git(["rev-list", f"origin/{branch}..HEAD", "--count"])
+            return int(output.strip()) > 0
+        except Exception:
+            return False
+
     async def sync(self):
         """
         Garante que o repositório está clonado e atualizado.
@@ -127,23 +163,33 @@ class ObsidianService:
             os.makedirs(self.vault_path, exist_ok=True)
             
             try:
-                # 1. git init (funciona mesmo que a pasta exista e não esteja vazia)
-                await asyncio.to_thread(subprocess.run, ["git", "init"], cwd=self.vault_path, check=True)
+                # 1. git init garantindo branch main
+                try:
+                    await asyncio.to_thread(subprocess.run, ["git", "init", "-b", "main"], cwd=self.vault_path, check=True)
+                except Exception:
+                    await asyncio.to_thread(subprocess.run, ["git", "init"], cwd=self.vault_path, check=True)
+                    await asyncio.to_thread(subprocess.run, ["git", "branch", "-M", "main"], cwd=self.vault_path)
                 
                 # 2. Configurar remote
                 try:
                     await asyncio.to_thread(subprocess.run, ["git", "remote", "remove", "origin"], cwd=self.vault_path, capture_output=True)
-                except:
+                except Exception:
                     pass
                 await asyncio.to_thread(subprocess.run, ["git", "remote", "add", "origin", self.repo_url], cwd=self.vault_path, check=True)
                 
                 # 3. Configurar usuário Git localmente
                 self._setup_git_user()
                 
-                # 4. Fetch e Reset (usando env para SSH_COMMAND)
+                # 4. Fetch e Checkout tracking
                 print(f"Baixando arquivos de {self.repo_url}...")
                 await asyncio.to_thread(subprocess.run, ["git", "fetch", "origin"], cwd=self.vault_path, env=os.environ, check=True)
-                await asyncio.to_thread(subprocess.run, ["git", "reset", "--hard", "origin/main"], cwd=self.vault_path, check=True)
+                
+                # Cria branch local 'main' com tracking para 'origin/main'
+                try:
+                    await asyncio.to_thread(subprocess.run, ["git", "checkout", "-B", "main", "origin/main"], cwd=self.vault_path, check=True)
+                except Exception:
+                    await asyncio.to_thread(subprocess.run, ["git", "reset", "--hard", "origin/main"], cwd=self.vault_path, check=True)
+                    await asyncio.to_thread(subprocess.run, ["git", "branch", "-M", "main"], cwd=self.vault_path)
                 
                 print("Vault inicializado com sucesso via git init.")
             except subprocess.CalledProcessError as e:
@@ -152,16 +198,19 @@ class ObsidianService:
                 raise Exception(f"Falha na inicialização do Git: {error_output}")
         else:
             print("Atualizando Vault (git pull)...")
+            branch = await self._ensure_branch()
             try:
-                # O pull --rebase é mais limpo para automações
-                await self._run_git(["pull", "--rebase", "origin", "main"])
+                await self._run_git(["pull", "--rebase", "origin", branch])
             except Exception as e:
                 print(f"Erro no pull --rebase: {e}. Tentando abortar rebase.")
                 try:
                     await self._run_git(["rebase", "--abort"])
-                except:
+                except Exception:
                     pass
-                await self._run_git(["pull", "origin", "main", "--no-edit"])
+                try:
+                    await self._run_git(["pull", "origin", branch, "--no-edit"])
+                except Exception as pull_err:
+                    print(f"Aviso no pull fallback: {pull_err}")
 
     async def push(self, message: str = "Maeve Auto-update"):
         """
@@ -169,29 +218,41 @@ class ObsidianService:
         Implementa lógica de rebase e resolução de conflitos simples.
         """
         try:
+            # 1. Garante que a branch local está alinhada para 'main'
+            branch = await self._ensure_branch()
+            self._setup_git_user()
+
             await self._run_git(["add", "."])
             status = await self._run_git(["status", "--porcelain"])
             
+            should_push = False
             if status.strip():
                 await self._run_git(["commit", "-m", message])
-                
-                # Sincronização robusta
+                should_push = True
+            elif await self._has_unpushed_commits(branch):
+                print("Detectados commits locais não enviados ao remoto. Disparando sincronização...")
+                should_push = True
+
+            if should_push:
                 print("Sincronizando com o remoto antes do push (pull --rebase)...")
                 try:
-                    await self._run_git(["pull", "--rebase", "origin", "main"])
+                    await self._run_git(["pull", "--rebase", "origin", branch])
                 except Exception:
                     print("Conflito detectado ou falha no rebase. Tentando forçar resolução...")
                     try:
                         await self._run_git(["rebase", "--abort"])
-                    except:
+                    except Exception:
                         pass
-                    # Tenta pull simples com estratégia recursiva padrão
-                    await self._run_git(["pull", "origin", "main", "--no-edit"])
+                    try:
+                        await self._run_git(["pull", "origin", branch, "--no-edit"])
+                    except Exception as pull_err:
+                        print(f"Aviso no pull fallback: {pull_err}")
                 
-                await self._run_git(["push", "origin", "main"])
-                print(f"Alterações enviadas com sucesso: {message}")
+                # Push explícito com HEAD:branch para garantir envio sem erro de refspec
+                await self._run_git(["push", "origin", f"HEAD:{branch}"])
+                print(f"Alterações enviadas com sucesso para origin/{branch}: {message}")
             else:
-                print("Nada para commitar.")
+                print("Nada para commitar ou enviar ao remoto.")
         except Exception as e:
             error_msg = f"FALHA CRÍTICA NO GIT: {str(e)}"
             print(error_msg)
