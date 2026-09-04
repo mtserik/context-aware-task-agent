@@ -16,6 +16,9 @@ from src.services.obsidian import ObsidianService
 from src.services.database import DatabaseService
 from src.services.search import SearchService
 from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Inicialização dos Serviços ---
 ticktick = TickTickService()
@@ -127,6 +130,21 @@ async def create_ticktick_task(
         return f"ID_CRIADO: {task_id}"
     except Exception as e: return f"❌ Erro: {str(e)}"
 
+def _normalize_ticktick_date(date_str: str) -> str:
+    """Normaliza strings de data para ISO compatível com a API do TickTick."""
+    if not date_str:
+        return date_str
+    d = str(date_str).strip()
+    if len(d) == 10 and d.count("-") == 2:
+        return f"{d}T00:00:00-0300"
+    if "T" in d:
+        time_part = d.split("T")[1]
+        if "Z" not in time_part and "+" not in time_part and "-" not in time_part:
+            return f"{d}-0300"
+    elif "Z" not in d and "+" not in d and "-" not in d[10:]:
+        return f"{d}-0300"
+    return d
+
 @tool
 async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
     """
@@ -144,20 +162,12 @@ async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
             if "project_id" in item: item["projectId"] = item.pop("project_id")
             
             # Normalização de Datas (Time Blocking Support)
-            final_due = item.pop("due_date", None)
-            final_start = item.pop("start_date", None)
+            final_due = _normalize_ticktick_date(item.pop("due_date", None))
+            final_start = _normalize_ticktick_date(item.pop("start_date", None))
 
             if final_due:
-                # Garante fuso horário BR
-                if "Z" not in final_due and "-" not in final_due[10:]: final_due += "-0300"
                 item["dueDate"] = final_due
-                
-                # Se a IA não definiu um início, o início é igual ao fim (sem duração)
-                if not final_start:
-                    item["startDate"] = final_due
-                else:
-                    if "Z" not in final_start and "-" not in final_start[10:]: final_start += "-0300"
-                    item["startDate"] = final_start
+                item["startDate"] = final_start or final_due
 
             normalized.append(item)
             
@@ -169,9 +179,6 @@ async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
 
 @tool
 async def create_ticktick_project(name: str, color: str = None, view_mode: str = "list"):
-
-
-
     """Cria um novo projeto (lista) no TickTick via API REST."""
     print(f"DEBUG [create_ticktick_project]: {name}")
     try:
@@ -192,9 +199,28 @@ async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
         tasks = await ticktick.get_tasks(project_id=project_id)
         if not tasks: return "Nenhuma tarefa pendente encontrada."
         
-        # Filtro de data
+        # Filtro de data inteligente com suporte a 7 dias de lookback (tarefas atrasadas)
         if date_filter:
-            tasks = [t for t in tasks if t.get('dueDate') and date_filter in t['dueDate']]
+            try:
+                target_dt = datetime.strptime(date_filter[:10], "%Y-%m-%d").date()
+                start_lookback = target_dt - timedelta(days=7)
+                filtered = []
+                for t in tasks:
+                    due_raw = t.get('dueDate')
+                    if not due_raw:
+                        continue
+                    due_date_str = str(due_raw)[:10]
+                    try:
+                        task_dt = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+                        if start_lookback <= task_dt <= target_dt:
+                            filtered.append(t)
+                    except ValueError:
+                        if date_filter in str(due_raw):
+                            filtered.append(t)
+                tasks = filtered
+            except Exception as e:
+                print(f"Fallback filtro data: {e}")
+                tasks = [t for t in tasks if t.get('dueDate') and date_filter in str(t['dueDate'])]
         
         if not tasks: return f"Nenhuma tarefa pendente para a data {date_filter}."
         
@@ -376,9 +402,13 @@ tool_node = ToolNode(tools)
 
 class MaeveAgent:
     def __init__(self, checkpointer=None):
-        # Modelos disponíveis
-        self.fast_model = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=2048).bind_tools(tools)
-        self.smart_model = ChatOpenAI(model="gpt-4o", temperature=0, max_tokens=4096).bind_tools(tools)
+        # Modelos disponíveis com suporte a variáveis de ambiente
+        fast_model_name = os.getenv("MAEVE_FAST_MODEL", "gpt-4o-mini")
+        smart_model_name = os.getenv("MAEVE_SMART_MODEL", "gpt-4o")
+
+        self.fast_model = ChatOpenAI(model=fast_model_name, temperature=0, max_tokens=2048).bind_tools(tools)
+        self.smart_model = ChatOpenAI(model=smart_model_name, temperature=0, max_tokens=4096).bind_tools(tools)
+        self.router_model = ChatOpenAI(model=fast_model_name, temperature=0, max_tokens=256)
         
         # O grafo agora inclui roteamento
         self._graph = self._build_graph(checkpointer)
@@ -421,8 +451,8 @@ class MaeveAgent:
         """
         
         try:
-            # Usamos o gpt-4o-mini sempre para rotear (é rápido e barato)
-            raw_decision = await ChatOpenAI(model="gpt-4o-mini", temperature=0).ainvoke(routing_prompt, config={"tags": ["router_llm"]})
+            # Reutiliza a instância dedicada de router_model (sem recriar a cada mensagem)
+            raw_decision = await self.router_model.ainvoke(routing_prompt, config={"tags": ["router_llm"]})
             # Limpeza básica do JSON caso o modelo retorne Markdown
             clean_json = raw_decision.content.replace("```json", "").replace("```", "").strip()
             decision = json.loads(clean_json)
@@ -445,11 +475,17 @@ class MaeveAgent:
         
         def get_valid_sequence(msgs, limit=20):
             if len(msgs) <= limit:
-                return msgs
-            subset = msgs[-limit:]
+                subset = list(msgs)
+            else:
+                subset = list(msgs[-limit:])
+                while subset and isinstance(subset[0], ToolMessage) and limit < len(msgs):
+                    limit += 1
+                    subset = list(msgs[-limit:])
+            
+            # Remove ToolMessages órfãs no início para evitar loop e rejeição da API
             while subset and isinstance(subset[0], ToolMessage):
-                limit += 1
-                subset = msgs[-limit:]
+                subset = subset[1:]
+
             if subset and isinstance(subset[-1], AIMessage) and subset[-1].tool_calls:
                 subset = subset[:-1]
             return subset
@@ -477,8 +513,8 @@ class MaeveAgent:
         chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
 
         last_query = user_msg.content if user_msg else ""
-        context_docs = await vector_db.search_context(last_query) if last_query else []
-        context_str = "\n".join([f"- {doc['metadata'].get('title')}: {doc['content'][:200]}" for doc in context_docs])
+        context_docs = await vector_db.search_context(last_query, limit=3) if last_query else []
+        context_str = "\n".join([f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs])
         
         # Contexto Temporal
         now_dt = datetime.now()

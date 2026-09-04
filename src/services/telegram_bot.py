@@ -36,8 +36,31 @@ class TelegramService:
             "Seu Second Brain está conectado via Telegram. Como posso te ajudar?"
         )
 
+    async def _send_long_message(self, messageable, text: str, **kwargs):
+        """
+        Envia mensagens dividindo em blocos de até 4000 caracteres para respeitar o limite do Telegram (4096).
+        """
+        max_len = 4000
+        if len(text) <= max_len:
+            return await messageable.reply_text(text, **kwargs)
+
+        chunks = []
+        remaining = text
+        while len(remaining) > max_len:
+            split_idx = remaining.rfind("\n", 0, max_len)
+            if split_idx == -1 or split_idx < max_len // 2:
+                split_idx = max_len
+            chunks.append(remaining[:split_idx])
+            remaining = remaining[split_idx:].lstrip("\n")
+        if remaining:
+            chunks.append(remaining)
+
+        for chunk in chunks:
+            await messageable.reply_text(chunk, **kwargs)
+
     async def _respond_with_voice(self, text: str, update: Update):
         """Converte texto em áudio e envia para o usuário."""
+        temp_voice_path = None
         try:
             user_id = str(update.effective_user.id)
             # Importação tardia para evitar circularidade
@@ -57,22 +80,19 @@ class TelegramService:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_voice:
                 temp_voice_path = temp_voice.name
             
-            # OpenAI response.stream_to_file é síncrono no SDK atual, 
-            # mas vamos usar a forma recomendada para salvar o conteúdo.
-            await response.aread() # Lê o conteúdo se necessário (dependendo da versão do SDK)
             response.write_to_file(temp_voice_path)
 
             # 3. Envia o áudio de volta
             with open(temp_voice_path, "rb") as audio:
                 await update.message.reply_voice(voice=audio)
-            
-            # 4. Limpeza
-            if os.path.exists(temp_voice_path):
-                os.remove(temp_voice_path)
                 
         except Exception as e:
             logging.error(f"Erro no TTS: {e}")
-            await update.message.reply_text(f"⚠️ Tive um problema ao gerar minha resposta em áudio, mas aqui está o texto:\n\n{text}")
+            await self._send_long_message(update.message, f"⚠️ Tive um problema ao gerar minha resposta em áudio, mas aqui está o texto:\n\n{text}")
+        finally:
+            # 4. Limpeza garantida
+            if temp_voice_path and os.path.exists(temp_voice_path):
+                os.remove(temp_voice_path)
 
     async def change_voice_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /voz para escolher a voz do assistente."""
@@ -101,6 +121,10 @@ class TelegramService:
         """Processa a escolha da voz via botões."""
         query = update.callback_query
         user_id = str(query.from_user.id)
+        if self.allowed_user_id and user_id != self.allowed_user_id:
+            await query.answer("Acesso não autorizado.", show_alert=True)
+            return
+
         voice_choice = query.data.replace('voice_', '')
         
         await query.answer()
@@ -173,7 +197,7 @@ class TelegramService:
                 if force_voice or "responda em áudio" in text.lower() or "fale" in text.lower():
                     await self._respond_with_voice(final_response, update)
                 else:
-                    await update.message.reply_text(final_response)
+                    await self._send_long_message(update.message, final_response)
             else:
                 await update.message.reply_text("Não consegui gerar uma resposta.")
 
@@ -201,6 +225,7 @@ class TelegramService:
 
         await update.message.reply_text("Ouvindo... 🎙️")
         
+        temp_audio_path = None
         try:
             # 1. Download do arquivo de voz
             voice_file = await context.bot.get_file(update.message.voice.file_id)
@@ -216,9 +241,6 @@ class TelegramService:
                     file=audio_file,
                     response_format="text"
                 )
-            
-            # Limpeza
-            os.remove(temp_audio_path)
 
             if transcript:
                 await update.message.reply_text(f"📝 _Transcrição:_ \"{transcript}\"")
@@ -230,6 +252,10 @@ class TelegramService:
         except Exception as e:
             logging.error(f"Erro ao processar áudio: {e}")
             await update.message.reply_text("Erro ao processar sua mensagem de voz.")
+        finally:
+            # Limpeza garantida
+            if temp_audio_path and os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Processa documentos (PDF), extrai texto e envia para Maeve indexar/resumir."""
@@ -244,6 +270,7 @@ class TelegramService:
 
         await update.message.reply_text(f"Recebi seu documento: {doc.file_name}. Lendo... 📖")
 
+        temp_pdf_path = None
         try:
             file = await context.bot.get_file(doc.file_id)
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
@@ -255,8 +282,6 @@ class TelegramService:
             full_text = ""
             for page in reader.pages:
                 full_text += page.extract_text() + "\n"
-            
-            os.remove(temp_pdf_path)
 
             if not full_text.strip():
                 await update.message.reply_text("Não consegui extrair texto deste PDF (pode ser uma imagem).")
@@ -274,6 +299,9 @@ class TelegramService:
         except Exception as e:
             logging.error(f"Erro ao processar documento: {e}")
             await update.message.reply_text("Erro ao ler o documento.")
+        finally:
+            if temp_pdf_path and os.path.exists(temp_pdf_path):
+                os.remove(temp_pdf_path)
 
     async def start_bot(self):
         """Inicializa e roda o bot de forma assíncrona."""

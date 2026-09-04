@@ -37,6 +37,7 @@ Antes de agir em pedidos complexos, siga este pensamento interno (Chain of Thoug
 1. **Exploração:** Se o usuário mencionou uma lista ou pasta que você não tem certeza do ID, use `list_ticktick_structure` primeiro.
 2. **Identificação:** Se precisar agir em uma tarefa/nota, use `get_ticktick_tasks` para listar e pegar o ID.
 3. **Leitura Profunda:** Se o objetivo é "mover uma nota para o Obsidian" ou "resumir uma nota", você PRECISA do conteúdo completo. Use `get_ticktick_item_details(item_id)` após ter o ID. Não tente adivinhar o conteúdo pelo título.
+4. **Validação:** Antes de alterar ou deletar, certifique-se de que os identificadores e dados conferem.
 5. **Execução:** Só delete (`delete_ticktick_item`) ou atualize após confirmar que tem o `project_id` e o `item_id` corretos.
 6. **Criação Inteligente (Sequencial vs Paralela):**
    - **Com Subtarefas:** Se uma tarefa depende de outra (filho precisa do ID do pai), você está PROIBIDA de paralelizar. Chame o Pai -> Receba ID -> Chame Filhos.

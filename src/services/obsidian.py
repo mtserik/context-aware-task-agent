@@ -3,6 +3,8 @@ import subprocess
 import glob
 import re
 import yaml
+import tempfile
+import shutil
 from typing import List, Dict, Any
 
 class ObsidianService:
@@ -14,9 +16,8 @@ class ObsidianService:
     def __init__(self):
         self.repo_url = os.getenv("OBSIDIAN_REPO_URL")
         self.vault_path = os.getenv("OBSIDIAN_VAULT_PATH", "/app/obsidian_vault")
-        # O arquivo no container é id_ed25519 (sem o sufixo _maeve que eu presumi antes)
         self.ssh_key_source = "/root/.ssh/id_ed25519"
-        self.ssh_key_dest = "/tmp/id_ed25519_container"
+        self.ssh_key_dest = os.path.join(tempfile.gettempdir(), "id_ed25519_container")
         self.templates_folder = ".maeve/templates"
         
         self._setup_ssh()
@@ -54,16 +55,18 @@ class ObsidianService:
                     first_line = key_content.split("\n")[0]
                     print(f"SSH key detectada: {first_line}... [Tamanho total: {len(key_content)}]")
 
-                with open(self.ssh_key_dest, "w") as f:
+                with open(self.ssh_key_dest, "w", encoding="utf-8") as f:
                     f.write(key_content)
                 
-                subprocess.run(["chmod", "600", self.ssh_key_dest], check=True)
+                if os.name != "nt":
+                    subprocess.run(["chmod", "600", self.ssh_key_dest], check=True)
                 print(f"SSH configurado em {self.ssh_key_dest}.")
             
             elif os.path.exists(self.ssh_key_source):
                 # 2. Modo Local: Chave via mapeamento de volume
-                subprocess.run(["cp", self.ssh_key_source, self.ssh_key_dest], check=True)
-                subprocess.run(["chmod", "600", self.ssh_key_dest], check=True)
+                shutil.copyfile(self.ssh_key_source, self.ssh_key_dest)
+                if os.name != "nt":
+                    subprocess.run(["chmod", "600", self.ssh_key_dest], check=True)
                 print(f"SSH configurado usando mapeamento local em {self.ssh_key_dest}.")
             
             else:
@@ -198,11 +201,35 @@ class ObsidianService:
         abs_paths = glob.glob(pattern, recursive=True)
         return [os.path.relpath(p, self.vault_path) for p in abs_paths]
 
+    def _safe_resolve(self, target_path: str) -> str:
+        """
+        Valida e resolve um caminho relativo ou absoluto para garantir que
+        ele esteja estritamente dentro do vault_path, prevenindo Path Traversal.
+        """
+        if not target_path:
+            raise ValueError("Caminho inválido ou vazio.")
+
+        vault_real = os.path.realpath(self.vault_path)
+        if os.path.isabs(target_path):
+            resolved = os.path.realpath(target_path)
+        else:
+            resolved = os.path.realpath(os.path.join(vault_real, target_path))
+
+        if os.path.commonpath([vault_real, resolved]) != vault_real:
+            raise ValueError(f"Acesso negado: Tentativa de path traversal detectada para '{target_path}'.")
+
+        return resolved
+
     async def get_note_metadata(self, relative_path: str) -> Dict[str, Any]:
         """
         Extrai metadados básicos de uma nota (título, pasta, links, frontmatter).
         """
-        full_path = relative_path if os.path.isabs(relative_path) else os.path.join(self.vault_path, relative_path)
+        try:
+            full_path = self._safe_resolve(relative_path)
+        except ValueError as e:
+            print(f"Aviso de segurança em get_note_metadata: {e}")
+            return {}
+
         if not os.path.exists(full_path):
             return {}
 
@@ -255,7 +282,12 @@ class ObsidianService:
         """
         Lê um template e substitui as variáveis.
         """
-        template_path = os.path.join(self.vault_path, self.templates_folder, f"{template_name}.md")
+        template_rel = os.path.join(self.templates_folder, f"{template_name}.md")
+        try:
+            template_path = self._safe_resolve(template_rel)
+        except ValueError:
+            return f"Erro: Caminho de template inválido '{template_name}'"
+
         if not os.path.exists(template_path):
             return f"Erro: Template '{template_name}' não encontrado em {self.templates_folder}"
         
@@ -271,7 +303,11 @@ class ObsidianService:
         """
         Lê o conteúdo de uma nota Markdown. Aceita caminho absoluto ou relativo ao vault.
         """
-        full_path = file_path if os.path.isabs(file_path) else os.path.join(self.vault_path, file_path)
+        try:
+            full_path = self._safe_resolve(file_path)
+        except ValueError as e:
+            print(f"Aviso de segurança em get_note_content: {e}")
+            return ""
         
         if not os.path.exists(full_path):
             return ""
@@ -292,7 +328,7 @@ class ObsidianService:
         Cria ou atualiza uma nota no vault.
         relative_path: Caminho relativo ao vault (ex: 'Inbox/MinhaNota.md')
         """
-        full_path = os.path.join(self.vault_path, relative_path)
+        full_path = self._safe_resolve(relative_path)
         
         # Proteção contra diretórios
         if os.path.isdir(full_path):
@@ -333,7 +369,12 @@ class ObsidianService:
         """
         Remove um arquivo ou pasta do vault.
         """
-        full_path = os.path.join(self.vault_path, relative_path)
+        try:
+            full_path = self._safe_resolve(relative_path)
+        except ValueError as e:
+            print(f"Aviso de segurança em delete_item: {e}")
+            return False
+
         if not os.path.exists(full_path):
             return False
             
@@ -351,8 +392,8 @@ class ObsidianService:
         """
         Move ou renomeia um arquivo ou pasta.
         """
-        old_full_path = os.path.join(self.vault_path, old_relative_path)
-        new_full_path = os.path.join(self.vault_path, new_relative_path)
+        old_full_path = self._safe_resolve(old_relative_path)
+        new_full_path = self._safe_resolve(new_relative_path)
         
         if not os.path.exists(old_full_path):
             raise Exception(f"Caminho de origem não encontrado: {old_relative_path}")

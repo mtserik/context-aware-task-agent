@@ -27,20 +27,33 @@ async def reminder_worker(telegram_bot: TelegramService, db_service: DatabaseSer
                 try:
                     # 2. Envia via Telegram
                     # Nota: O telegram_bot.application.bot está disponível após inicializado
-                    if telegram_bot.application:
-                        msg = f"🔔 *Lembrete:* {content}"
-                        await telegram_bot.application.bot.send_message(
-                            chat_id=chat_id, 
-                            text=msg, 
-                            parse_mode="Markdown"
-                        )
+                    if telegram_bot.application and telegram_bot.application.bot:
+                        msg_plain = f"🔔 Lembrete: {content}"
+                        try:
+                            await telegram_bot.application.bot.send_message(
+                                chat_id=chat_id, 
+                                text=f"🔔 *Lembrete:* {content}", 
+                                parse_mode="Markdown"
+                            )
+                        except Exception as md_err:
+                            logger.warning(f"Falha no envio com Markdown ({md_err}). Tentando texto simples...")
+                            try:
+                                await telegram_bot.application.bot.send_message(
+                                    chat_id=chat_id, 
+                                    text=msg_plain
+                                )
+                            except Exception as send_err:
+                                logger.error(f"Erro definitivo ao enviar lembrete {rem_id} para chat {chat_id}: {send_err}")
                         
-                        # 3. Marca como concluído no banco
-                        await db_service.mark_reminder_completed(rem_id)
+                        # 3. Sempre marca como concluído para evitar loop infinito
+                        try:
+                            await db_service.mark_reminder_completed(rem_id)
+                        except Exception as db_err:
+                            logger.error(f"Erro ao marcar lembrete {rem_id} como concluído: {db_err}")
                     else:
                         logger.warning("Telegram Bot não inicializado no worker.")
                 except Exception as e:
-                    logger.error(f"Erro ao enviar mensagem de lembrete: {e}")
+                    logger.error(f"Erro ao processar lembrete {rem_id}: {e}")
 
         except Exception as e:
             logger.error(f"Erro no loop do worker de lembretes: {e}")

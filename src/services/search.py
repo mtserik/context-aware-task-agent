@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from typing import List, Dict, Any
 from tavily import TavilyClient
@@ -23,10 +24,8 @@ class SearchService:
             return [{"error": "Tavily API Key não configurada."}]
 
         try:
-            # Tavily client uses sync calls, but we can wrap it or just use it 
-            # as it's typically fast. For better performance in async flows, 
-            # we run it in a thread if needed.
-            response = self.client.search(
+            response = await asyncio.to_thread(
+                self.client.search,
                 query=query,
                 search_depth=search_depth,
                 max_results=max_results,
@@ -45,8 +44,11 @@ class SearchService:
             return "Erro: Tavily API Key não configurada."
 
         try:
-            # O modo 'qna' do Tavily já faz uma síntese inicial
-            response = self.client.qna_search(query=query, search_depth="advanced")
+            response = await asyncio.to_thread(
+                self.client.qna_search,
+                query=query,
+                search_depth="advanced"
+            )
             return response
         except Exception as e:
             logger.error(f"Erro no Deep Research: {e}")

@@ -1,4 +1,5 @@
 import os
+import uuid
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from langchain_openai import OpenAIEmbeddings
@@ -43,14 +44,15 @@ class VectorDBService:
             return
 
         client = await self._get_client()
-        embeddings = self.embeddings.embed_documents(texts)
+        embeddings = await self.embeddings.aembed_documents(texts)
         points = []
 
         for i, (text, vector) in enumerate(zip(texts, embeddings)):
             metadata = metadatas[i] if metadatas else {}
             metadata["content"] = text
-            # Garantir que o ID seja estável baseado no conteúdo ou path
-            point_id = hash(metadata.get("path", text) + str(i)) % (10**10)
+            # Garantir que o ID seja estável e determinístico baseado no path/conteúdo
+            stable_key = metadata.get("path") or f"doc_{i}_{text[:64]}"
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, stable_key))
 
             points.append(PointStruct(
                 id=point_id,
@@ -67,21 +69,26 @@ class VectorDBService:
         """
         Realiza uma busca semântica para encontrar contextos relevantes.
         Retorna uma lista de dicionários com conteúdo e metadados.
+        Em caso de erro (ex: Qdrant offline), retorna lista vazia com segurança.
         """
-        client = await self._get_client()
-        query_vector = self.embeddings.embed_query(query)
+        try:
+            client = await self._get_client()
+            query_vector = await self.embeddings.aembed_query(query)
 
-        response = await client.query_points(
-            collection_name=self.collection_name,
-            query=query_vector,
-            limit=limit,
-            with_payload=True
-        )
+            response = await client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                limit=limit,
+                with_payload=True
+            )
 
-        return [
-            {
-                "content": point.payload.get("content", ""),
-                "metadata": {k: v for k, v in point.payload.items() if k != "content"}
-            }
-            for point in response.points
-        ]
+            return [
+                {
+                    "content": point.payload.get("content", ""),
+                    "metadata": {k: v for k, v in point.payload.items() if k != "content"}
+                }
+                for point in response.points
+            ]
+        except Exception as e:
+            print(f"⚠️ [VectorDB] Falha ao consultar contexto: {e}")
+            return []

@@ -216,5 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
-GEMINI.md
+# Project Maeve
+obsidian_vault/
+db/
+.maeve_cli_history

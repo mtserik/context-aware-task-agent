@@ -28,11 +28,10 @@ async def get_api_key(api_key_header: str = Security(api_key_header)):
         return api_key_header
     raise HTTPException(status_code=403, detail="Acesso não autorizado: API Key inválida.")
 
-# --- App Initialization ---
-app = FastAPI(
-    title="Maeve AI Agent", 
-    description="Context-Aware Task Orchestrator (Obsidian-Powered)"
-)
+from contextlib import asynccontextmanager
+
+# Background tasks tracking to prevent garbage collection
+background_tasks = set()
 
 # Global instances
 maeve = None
@@ -41,8 +40,8 @@ vector_db = VectorDBService()
 ticktick_service = TickTickService()
 telegram_bot = TelegramService()
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global maeve, telegram_bot
     
     # 1. Inicializa Maeve (com ou sem Supabase)
@@ -57,7 +56,9 @@ async def startup_event():
     # 2. Inicializa e inicia o Telegram Bot em background
     try:
         if telegram_bot.token:
-            asyncio.create_task(telegram_bot.start_bot())
+            tg_task = asyncio.create_task(telegram_bot.start_bot())
+            background_tasks.add(tg_task)
+            tg_task.add_done_callback(background_tasks.discard)
             print("🚀 Tentando iniciar Interface Telegram em background...")
         else:
             print("⚠️ TELEGRAM_BOT_TOKEN não configurado. Interface Telegram desativada.")
@@ -65,16 +66,35 @@ async def startup_event():
         print(f"❌ Erro ao iniciar Telegram: {e}")
 
     # 3. Inicia o Worker de Lembretes
-    asyncio.create_task(reminder_worker(telegram_bot, db_service))
+    rem_task = asyncio.create_task(reminder_worker(telegram_bot, db_service))
+    background_tasks.add(rem_task)
+    rem_task.add_done_callback(background_tasks.discard)
 
-@app.on_event("shutdown")
-async def shutdown_event():
+    yield
+
+    # Shutdown
     await telegram_bot.stop_bot()
     await db_service.close()
 
+# --- App Initialization ---
+app = FastAPI(
+    title="Maeve AI Agent", 
+    description="Context-Aware Task Orchestrator (Obsidian-Powered)",
+    lifespan=lifespan
+)
+
 @app.get("/")
 async def read_root():
-    return {"status": "Maeve is online", "version": "0.1.0"}
+    return {"status": "Maeve is online", "version": "0.3.0"}
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "version": "0.3.0",
+        "agent_initialized": maeve is not None,
+        "database": "connected" if db_service.pool is not None else "standby"
+    }
 
 # ... (OAuth endpoints)
 

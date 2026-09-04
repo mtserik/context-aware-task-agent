@@ -405,6 +405,10 @@ class TickTickService:
         })
         return json.dumps(result, indent=2, ensure_ascii=False)
 
+    async def get_all_completed_tasks(self, start_date: Optional[str] = None) -> str:
+        """Alias para get_completed_tasks_history para compatibilidade."""
+        return await self.get_completed_tasks_history(start_date)
+
     async def list_mcp_tools(self) -> List[Dict[str, Any]]:
         """Lista as ferramentas disponíveis no servidor MCP do TickTick via JSON-RPC."""
         result = await self._call_mcp_tool("tools/list", {})

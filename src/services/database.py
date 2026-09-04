@@ -26,9 +26,9 @@ class DatabaseService:
             try:
                 url = urlparse.urlparse(conn_info)
                 # Só tenta resolver se não for um IP puro
-                if not url.hostname.replace('.', '').isdigit():
+                if url.hostname and not url.hostname.replace('.', '').isdigit():
                     ipv4 = socket.gethostbyname(url.hostname)
-                    conn_info = conn_info.replace(url.hostname, ipv4)
+                    conn_info = conn_info.replace(f"@{url.hostname}", f"@{ipv4}", 1)
                     print(f"📡 DNS: {url.hostname} -> {ipv4}")
             except Exception as e:
                 print(f"⚠️ DNS Bypass: {e}")
@@ -155,7 +155,14 @@ class DatabaseService:
                 await cur.execute("SELECT preferences FROM user_preferences WHERE user_id = %s", (user_id,))
                 res = await cur.fetchone()
                 if res and res[0]:
-                    return res[0].get(key, default)
+                    prefs = res[0]
+                    if isinstance(prefs, str):
+                        try:
+                            prefs = json.loads(prefs)
+                        except Exception:
+                            prefs = {}
+                    if isinstance(prefs, dict):
+                        return prefs.get(key, default)
                 return default
 
     async def update_user_preference(self, user_id: str, key: str, value: Any):
@@ -168,6 +175,13 @@ class DatabaseService:
                 res = await cur.fetchone()
                 
                 prefs = res[0] if res and res[0] else {}
+                if isinstance(prefs, str):
+                    try:
+                        prefs = json.loads(prefs)
+                    except Exception:
+                        prefs = {}
+                if not isinstance(prefs, dict):
+                    prefs = {}
                 prefs[key] = value
                 
                 await cur.execute(
