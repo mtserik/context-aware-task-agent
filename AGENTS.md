@@ -421,7 +421,28 @@ src/
 
 #### 4.6 Configuração do Antigravity CLI / IDE
 
-Arquivo: `~/.gemini/config/mcp_config.json` (ou configuração equivalente de MCP do Antigravity):
+Arquivo de configuração do Antigravity: `~/.gemini/config/mcp_config.json`
+
+##### Cenário A: Conexão Remota via Railway (Máquina do Trabalho / Fora de Casa) 🚀
+Permite usar a Maeve no Antigravity a partir de qualquer computador corporativo ou remoto sem necessidade de clonar o repositório ou instalar dependências locais. O tráfego ocorre via HTTPS/SSE com segurança perimétrica:
+
+```json
+{
+  "mcpServers": {
+    "maeve": {
+      "url": "https://<seu-app>.up.railway.app/mcp/sse",
+      "headers": {
+        "Authorization": "Bearer SUA_CHAVE_MAEVE_MCP_SECRET"
+      }
+    }
+  }
+}
+```
+
+*Nota de Segurança:* O endpoint `/mcp/` no Railway é protegido pelo `MCPAuthMiddleware` (`src/mcp/auth.py`). Requisições sem token válido são rejeitadas com `401 Unauthorized`. O token é configurado na variável de ambiente `MAEVE_MCP_SECRET` no painel do Railway.
+
+##### Cenário B: Conexão Local Direta (stdio no Desktop Pessoal)
+Executa o servidor localmente via processo subprocess (ideal para desenvolvimento offline ou baixa latência):
 
 ```json
 {
@@ -442,7 +463,7 @@ Arquivo: `~/.gemini/config/mcp_config.json` (ou configuração equivalente de MC
 ```
 
 > **Nota de Custos & Chaves:**
-> A `OPENAI_API_KEY` configurada no ambiente do servidor MCP é utilizada **exclusivamente** para gerar embeddings de busca no Qdrant (`text-embedding-3-small`). Nenhuma chamada para chat completion (`gpt-4o`, `gpt-5.6-luna`, etc.) é feita pelo servidor MCP. O modelo de raciocínio é 100% financiado pelo client host (Antigravity).
+> Em ambos os cenários, a Maeve opera sob o **Zero-Token Principle**. Nenhuma chamada de chat completion (`gpt-4o`, `claude-sonnet-5`, etc.) é feita pelo servidor MCP da Maeve. O modelo generativo do Antigravity é o único cérebro pensante. A única chamada de IA no backend da Maeve é o embedding matemático do `memory_search` (`text-embedding-3-small` no Qdrant, ~$0.000004 por busca).
 
 #### 4.7 Exemplo de Fluxo Operacional Host-Driven
 

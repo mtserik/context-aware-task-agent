@@ -1,5 +1,8 @@
 import os
+import sys
 import asyncio
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
@@ -101,16 +104,16 @@ def test_knowledge_domain_batch_move_notes():
 
 def test_fastapi_endpoints_health():
     """Valida se os endpoints do FastAPI montados via APIRouter respondem com sucesso."""
-    with TestClient(app) as client:
-        resp_root = client.get("/")
-        assert resp_root.status_code == 200
-        assert resp_root.json()["status"] == "Maeve is online"
-        assert resp_root.json()["version"] == "0.4.0"
+    client = TestClient(app)
+    resp_root = client.get("/")
+    assert resp_root.status_code == 200
+    assert resp_root.json()["status"] == "Maeve is online"
+    assert resp_root.json()["version"] == "0.4.0"
 
-        resp_health = client.get("/health")
-        assert resp_health.status_code == 200
-        assert resp_health.json()["status"] == "healthy"
-        assert resp_health.json()["version"] == "0.4.0"
+    resp_health = client.get("/health")
+    assert resp_health.status_code == 200
+    assert resp_health.json()["status"] == "healthy"
+    assert resp_health.json()["version"] == "0.4.0"
     print("[OK] test_fastapi_endpoints_health PASSOU")
 
 

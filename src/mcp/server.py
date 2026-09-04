@@ -1,4 +1,4 @@
-﻿"""
+"""
 Maeve FastMCP Server — Zero-Token Host-Driven Context & Memory Layer.
 
 Ponto de entrada do servidor MCP. Roda via stdio para integração com Antigravity CLI/IDE.
@@ -89,6 +89,29 @@ def create_mcp_server() -> FastMCP:
 
 # Instância global do servidor (necessária para `fastmcp dev` e `python -m`)
 mcp = create_mcp_server()
+
+
+def get_mcp_asgi_app():
+    """
+    Retorna a aplicação ASGI pronta para ser montada no FastAPI (ex: app.mount("/mcp", ...)).
+    
+    Recursos de Produção / Railway:
+    - Desativa a checagem restritiva de Host do FastMCP (DNS rebinding) para permitir subdomínios Railway.
+    - Aplica o MCPAuthMiddleware no perímetro, exigindo token Bearer / X-API-Key / ?token=.
+    """
+    from mcp.server.transport_security import TransportSecuritySettings
+    from src.mcp.auth import MCPAuthMiddleware
+
+    # Desativa proteção DNS rebinding nativa do FastMCP que rejeita hosts de nuvem (ex: *.railway.app)
+    # A segurança no Railway é garantida pelo nosso MCPAuthMiddleware
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
+
+    # mount_path=None permite que o FastAPI gerencie o prefixo '/mcp' via scope['root_path']
+    raw_sse_app = mcp.sse_app()
+
+    return MCPAuthMiddleware(raw_sse_app)
 
 
 if __name__ == "__main__":

@@ -77,3 +77,7 @@ app = FastAPI(
 app.include_router(health_router)
 app.include_router(chat_router)
 app.include_router(sync_router)
+
+# Mount MCP Remote Server (Transporte SSE com autenticação para Antigravity remoto)
+from src.mcp.server import get_mcp_asgi_app
+app.mount("/mcp", get_mcp_asgi_app())
