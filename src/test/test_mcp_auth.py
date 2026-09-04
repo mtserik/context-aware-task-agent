@@ -120,49 +120,37 @@ class TestFastAPIMCPMountIntegration(unittest.TestCase):
             r_mcp_invalid = client.get("/mcp/sse", headers={"Authorization": "Bearer bad-token"})
             self.assertEqual(r_mcp_invalid.status_code, 401)
 
-    def test_antigravity_initialize_post_sse_handling(self):
+    def test_antigravity_initialize_streamable_http(self):
         """
         Verifica que POST /mcp/sse (enviado pelo cliente Antigravity/agy ao inicializar)
-        não retorna 405 Method Not Allowed, e sim é processado com 202 Accepted.
+        responde com 200 OK e JSON-RPC initialization result válido.
         """
-        import uuid
-        import anyio
         from src.main import app
-
-        # Extrai o sse_transport montado na aplicação principal
-        sse_transport = None
-        for r in app.routes:
-            if getattr(r, "path", "") == "/mcp":
-                sse_transport = r.app.app.sse_transport
-                break
-
-        self.assertIsNotNone(sse_transport)
-
-        # Registra um mock writer para a sessão
-        mock_id = uuid.uuid4()
-        writer, reader = anyio.create_memory_object_stream(10)
-        sse_transport._read_stream_writers[mock_id] = writer
+        from src.mcp.server import mcp
 
         with patch.dict(os.environ, {"MAEVE_MCP_SECRET": "antigravity-secret-key"}):
-            client = TestClient(app)
-            # Envia POST /mcp/sse com method: initialize (sem query param session_id)
-            resp = client.post(
-                "/mcp/sse",
-                headers={"Authorization": "Bearer antigravity-secret-key"},
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": {"name": "antigravity", "version": "1.0"}
-                    }
-                }
-            )
-            # NÃO deve ser 405 Method Not Allowed
-            self.assertNotEqual(resp.status_code, 405)
-            self.assertEqual(resp.status_code, 202)
+            async def run_test():
+                async with mcp.session_manager.run():
+                    client = TestClient(app)
+                    resp = client.post(
+                        "/mcp/sse",
+                        headers={"Authorization": "Bearer antigravity-secret-key"},
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2024-11-05",
+                                "capabilities": {},
+                                "clientInfo": {"name": "antigravity", "version": "1.0"}
+                            }
+                        }
+                    )
+                    self.assertEqual(resp.status_code, 200)
+                    self.assertIn('"serverInfo"', resp.text)
+                    self.assertIn('"maeve"', resp.text)
+
+            asyncio.run(run_test())
 
 
 if __name__ == "__main__":

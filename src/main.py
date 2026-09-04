@@ -59,7 +59,10 @@ async def lifespan(app: FastAPI):
     background_tasks.add(rem_task)
     rem_task.add_done_callback(background_tasks.discard)
 
-    yield
+    # 4. Inicia o MCP Session Manager para transporte HTTP Streamable
+    from src.mcp.server import mcp
+    async with mcp.session_manager.run():
+        yield
 
     # Shutdown: Encerra conexões e pools de forma limpa
     logger.info("🛑 Encerrando todos os serviços ativos...")

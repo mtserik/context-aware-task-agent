@@ -430,7 +430,7 @@ Permite usar a Maeve no Antigravity a partir de qualquer computador corporativo 
 {
   "mcpServers": {
     "maeve": {
-      "url": "https://<seu-app>.up.railway.app/mcp/sse",
+      "serverUrl": "https://<seu-app>.up.railway.app/mcp/",
       "headers": {
         "Authorization": "Bearer SUA_CHAVE_MAEVE_MCP_SECRET"
       }
@@ -439,7 +439,7 @@ Permite usar a Maeve no Antigravity a partir de qualquer computador corporativo 
 }
 ```
 
-*Nota de Segurança:* O endpoint `/mcp/` no Railway é protegido pelo `MCPAuthMiddleware` (`src/mcp/auth.py`). Requisições sem token válido são rejeitadas com `401 Unauthorized`. O token é configurado na variável de ambiente `MAEVE_MCP_SECRET` no painel do Railway.
+*Nota de Protocolo & Segurança:* O endpoint `/mcp/` no Railway utiliza o transporte **Streamable HTTP** (MCP Specification 2024-11-05+), suportando handshake `initialize`, descoberta e execução de ferramentas diretamente. Também aceita conexões legadas com `/mcp/sse`. O perímetro é protegido pelo `MCPAuthMiddleware` (`src/mcp/auth.py`), validando a chave `MAEVE_MCP_SECRET`.
 
 ##### Cenário B: Conexão Local Direta (stdio no Desktop Pessoal)
 Executa o servidor localmente via processo subprocess (ideal para desenvolvimento offline ou baixa latência):

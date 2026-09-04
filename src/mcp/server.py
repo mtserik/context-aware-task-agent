@@ -91,46 +91,32 @@ def create_mcp_server() -> FastMCP:
 mcp = create_mcp_server()
 
 
-class ResilientMCPTransportMiddleware:
+class MCPHeaderNormalizerMiddleware:
     """
-    Middleware que intercepta requisições POST do cliente MCP do Antigravity (agy).
+    Middleware ASGI para normalização de headers entre clientes MCP (Antigravity/agy)
+    e o transporte Streamable HTTP do FastMCP.
     
-    Problema de incompatibilidade do cliente Antigravity:
-    O cliente MCP do Antigravity abre a conexão SSE via GET /mcp/sse, mas ao enviar mensagens
-    JSON-RPC (como 'initialize'), envia o POST diretamente para a URL base (/mcp/sse) em vez
-    do endpoint indicado no evento SSE (/mcp/messages/?session_id=...). No FastMCP padrão,
-    a rota /sse só aceita GET/HEAD, resultando em '405 Method Not Allowed'.
-    
-    Esta classe contorna essa limitação do cliente:
-    1. Intercepta requisições POST direcionadas a /sse, /messages (sem barra) ou /mcp.
-    2. Vincula automaticamente ao session_id ativo se não estiver na query string.
-    3. Delega diretamente para o handle_post_message do SseServerTransport, retornando 202 Accepted.
+    Compatibilidade:
+    1. Garante que o header Accept contenha 'text/event-stream' (exigido pela especificação Streamable HTTP).
+    2. Garante que requisições POST possuam Content-Type 'application/json'.
+    3. Normaliza caminhos para que tanto /mcp quanto /mcp/ e /mcp/sse sejam atendidos.
     """
-    def __init__(self, app, sse_transport):
+    def __init__(self, app):
         self.app = app
-        self.sse_transport = sse_transport
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            accept = headers.get(b"accept", b"").decode("utf-8", errors="ignore")
+            if "text/event-stream" not in accept:
+                headers[b"accept"] = b"application/json, text/event-stream"
 
-        method = scope.get("method", "")
-        path = scope.get("path", "")
+            if scope.get("method") == "POST":
+                ct = headers.get(b"content-type", b"").decode("utf-8", errors="ignore")
+                if not ct:
+                    headers[b"content-type"] = b"application/json"
 
-        if method == "POST" and (
-            path.endswith("/sse")
-            or path.rstrip("/").endswith("/messages")
-            or path.rstrip("/").endswith("/mcp")
-        ):
-            from urllib.parse import parse_qs, urlencode
-            qs = parse_qs(scope.get("query_string", b"").decode("utf-8", errors="ignore"))
-            if "session_id" not in qs and self.sse_transport._read_stream_writers:
-                latest_id = list(self.sse_transport._read_stream_writers.keys())[-1]
-                qs["session_id"] = [latest_id.hex]
-                scope["query_string"] = urlencode(qs, doseq=True).encode("utf-8")
-            await self.sse_transport.handle_post_message(scope, receive, send)
-            return
+            scope["headers"] = list(headers.items())
 
         await self.app(scope, receive, send)
 
@@ -139,36 +125,30 @@ def get_mcp_asgi_app():
     """
     Retorna a aplicação ASGI pronta para ser montada no FastAPI (ex: app.mount("/mcp", ...)).
     
-    Recursos de Produção / Railway:
-    - Desativa a checagem restritiva de Host do FastMCP (DNS rebinding) para permitir subdomínios Railway.
-    - Aplica ResilientMCPTransportMiddleware para compatibilidade com o cliente Antigravity CLI.
-    - Aplica o MCPAuthMiddleware no perímetro, exigindo token Bearer / X-API-Key / ?token=.
+    Implementação:
+    - Utiliza Streamable HTTP (MCP Spec 2024-11-05+), o protocolo moderno e oficial usado pelo Antigravity.
+    - Suporta requisições POST diretas (initialize, tools/list, tools/call) e streaming de respostas.
+    - Registra rotas para / e /sse, permitindo que URLs terminadas em /mcp, /mcp/ ou /mcp/sse funcionem identicamente.
+    - Aplica o MCPAuthMiddleware no perímetro com Bearer token / X-API-Key / ?token=.
     """
     from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.routing import Route
     from src.mcp.auth import MCPAuthMiddleware
 
-    # Desativa proteção DNS rebinding nativa do FastMCP que rejeita hosts de nuvem (ex: *.railway.app)
-    # A segurança no Railway é garantida pelo nosso MCPAuthMiddleware
+    # Desativa proteção DNS rebinding nativa do FastMCP para permitir subdomínios Railway
     mcp.settings.transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=False
     )
+    mcp.settings.streamable_http_path = "/"
 
-    # mount_path=None permite que o FastAPI gerencie o prefixo '/mcp' via scope['root_path']
-    raw_sse_app = mcp.sse_app()
+    streamable_app = mcp.streamable_http_app()
 
-    # Extrai a instância interna do SseServerTransport
-    sse_transport = None
-    for route in raw_sse_app.routes:
-        if hasattr(route, "app") and hasattr(route.app, "__self__"):
-            sse_transport = route.app.__self__
-            break
+    # Adiciona rota /sse como alias do endpoint principal para compatibilidade com clientes configurados com /mcp/sse
+    streamable_endpoint = streamable_app.routes[0].endpoint
+    streamable_app.routes.append(Route("/sse", endpoint=streamable_endpoint))
 
-    if sse_transport:
-        transport_app = ResilientMCPTransportMiddleware(raw_sse_app, sse_transport)
-    else:
-        transport_app = raw_sse_app
-
-    return MCPAuthMiddleware(transport_app)
+    normalized_app = MCPHeaderNormalizerMiddleware(streamable_app)
+    return MCPAuthMiddleware(normalized_app)
 
 
 if __name__ == "__main__":
