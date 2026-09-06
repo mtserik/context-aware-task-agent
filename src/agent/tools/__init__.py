@@ -25,6 +25,8 @@ from src.agent.tools.knowledge_tools import (
     get_obsidian_note_content,
     sync_obsidian_knowledge,
     log_cultural_review,
+    log_daily_journal,
+    log_user_insight,
     KNOWLEDGE_TOOLS,
 )
 from src.agent.tools.reminder_tools import (

@@ -20,6 +20,8 @@ _ticktick_service: Optional["TickTickService"] = None
 _database_service: Optional["DatabaseService"] = None
 _search_service: Optional["SearchService"] = None
 _telegram_service: Optional["TelegramService"] = None
+_profile_service: Optional["UserProfileService"] = None
+_journal_service: Optional["JournalService"] = None
 _maeve_agent: Optional["MaeveAgent"] = None
 
 def get_obsidian_service() -> "ObsidianService":
@@ -63,6 +65,20 @@ def get_telegram_service() -> "TelegramService":
         from src.services.telegram_bot import TelegramService
         _telegram_service = TelegramService()
     return _telegram_service
+
+def get_profile_service() -> "UserProfileService":
+    global _profile_service
+    if _profile_service is None:
+        from src.services.profile import UserProfileService
+        _profile_service = UserProfileService()
+    return _profile_service
+
+def get_journal_service() -> "JournalService":
+    global _journal_service
+    if _journal_service is None:
+        from src.services.journal import JournalService
+        _journal_service = JournalService()
+    return _journal_service
 
 def get_maeve_agent() -> Optional["MaeveAgent"]:
     global _maeve_agent

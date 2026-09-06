@@ -180,6 +180,18 @@ class TelegramService:
             "Seu Second Brain está conectado via Telegram. Como posso te ajudar?"
         )
 
+    async def diario_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handler para o comando /diario — inicia o ritual de reflexão noturna."""
+        user_id = str(update.effective_user.id)
+        if self.allowed_user_id and user_id != self.allowed_user_id:
+            await update.message.reply_text("Sinto muito, mas não estou autorizada a conversar com você.")
+            return
+
+        from src.services.registry import get_journal_service
+        journal_svc = get_journal_service()
+        greeting = journal_svc.get_greeting()
+        await update.message.reply_text(greeting, parse_mode="Markdown")
+
     async def _send_long_message(self, messageable, text: str, context: Optional[ContextTypes.DEFAULT_TYPE] = None, **kwargs):
         """
         Envia mensagens dividindo em blocos semanticamente naturais (fluxo humano de pensamento)
@@ -502,6 +514,7 @@ class TelegramService:
         # Handlers
         self.application.add_handler(CommandHandler('start', self.start))
         self.application.add_handler(CommandHandler('voz', self.change_voice_command))
+        self.application.add_handler(CommandHandler('diario', self.diario_command))
         self.application.add_handler(CallbackQueryHandler(self.voice_callback_handler))
         self.application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.handle_message))
         self.application.add_handler(MessageHandler(filters.VOICE, self.handle_voice))

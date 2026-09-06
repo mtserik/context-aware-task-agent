@@ -2,6 +2,7 @@ from typing import List, Dict
 from langchain_core.tools import tool
 from src.domain.knowledge import KnowledgeDomainService
 from src.services.culture import CultureService
+from src.services.registry import get_journal_service, get_profile_service
 
 _knowledge_domain = KnowledgeDomainService()
 _culture_service = CultureService()
@@ -77,6 +78,22 @@ async def log_cultural_review(title: str, media_type: str = "filme", review_text
         return f"Resenha de '{result.get('title')}' salva em '{result.get('path')}' com pôster HD embutido ({result.get('poster_url')})!"
     return f"Erro ao registrar resenha: {result.get('error')}"
 
+@tool
+async def log_daily_journal(thoughts: str, mood: str = "Produtivo", energy: int = 8, highlights: str = ""):
+    """Registra o Diário Noturno do Erik no Obsidian Vault em 'Diário/YYYY-MM-DD.md' com humor, energia e reflexões livres."""
+    journal_svc = get_journal_service()
+    res = await journal_svc.log_journal(thoughts=thoughts, mood=mood, energy=energy, highlights=highlights)
+    if res.get("success"):
+        return f"Diário Noturno salvo em '{res.get('path')}' (Humor: {res.get('mood')}, Energia: {res.get('energy')}/10)!"
+    return f"Erro ao salvar diário: {res.get('error')}"
+
+@tool
+async def log_user_insight(category: str, insight: str, source: str = "chat"):
+    """Registra um aprendizado de perfil comportamental/operacional sobre o Erik no Supabase e no Obsidian."""
+    profile_svc = get_profile_service()
+    res = await profile_svc.add_insight(category=category, insight=insight, source=source)
+    return f"Insight de perfil registrado em '{res.get('category')}': {res.get('insight')}"
+
 KNOWLEDGE_TOOLS = [
     create_obsidian_note,
     list_obsidian_folders,
@@ -89,4 +106,6 @@ KNOWLEDGE_TOOLS = [
     get_obsidian_note_content,
     sync_obsidian_knowledge,
     log_cultural_review,
+    log_daily_journal,
+    log_user_insight,
 ]

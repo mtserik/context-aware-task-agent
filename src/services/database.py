@@ -4,7 +4,7 @@ import socket
 import json
 import logging
 import urllib.parse as urlparse
-from typing import Any
+from typing import Any, Optional, List, Dict
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -119,6 +119,21 @@ class DatabaseService:
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+
+                # Tabela de Insights de Perfil e Comportamento (Sprint 2)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_insights (
+                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                        user_id TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        insight TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                await cur.execute("CREATE INDEX IF NOT EXISTS idx_user_insights_user_id ON user_insights(user_id)")
+                await cur.execute("CREATE INDEX IF NOT EXISTS idx_user_insights_category ON user_insights(category)")
+
                 logger.info("Tabelas customizadas verificadas/criadas no Supabase.")
 
     async def close(self):
@@ -215,3 +230,46 @@ class DatabaseService:
                     "ON CONFLICT (user_id) DO UPDATE SET preferences = EXCLUDED.preferences, updated_at = CURRENT_TIMESTAMP",
                     (user_id, json.dumps(prefs))
                 )
+
+    # --- Métodos de Insights de Perfil e Comportamento (Sprint 2) ---
+    async def add_user_insight(self, user_id: str, category: str, insight: str, source: str = "chat") -> str:
+        """Adiciona um novo insight de perfil comportamental ou operacional do Erik."""
+        pool = await self.get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO user_insights (user_id, category, insight, source) VALUES (%s, %s, %s, %s) RETURNING id",
+                    (user_id, category, insight, source)
+                )
+                res = await cur.fetchone()
+                return str(res[0])
+
+    async def get_user_insights(self, user_id: str, limit: int = 15, category: Optional[str] = None) -> list:
+        """Recupera os insights mais recentes do perfil do Erik."""
+        pool = await self.get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                if category:
+                    await cur.execute(
+                        "SELECT id, category, insight, source, created_at FROM user_insights "
+                        "WHERE user_id = %s AND category = %s ORDER BY created_at DESC LIMIT %s",
+                        (user_id, category, limit)
+                    )
+                else:
+                    await cur.execute(
+                        "SELECT id, category, insight, source, created_at FROM user_insights "
+                        "WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+                        (user_id, limit)
+                    )
+                rows = await cur.fetchall()
+                return [
+                    {
+                        "id": str(r[0]),
+                        "category": r[1],
+                        "insight": r[2],
+                        "source": r[3],
+                        "created_at": r[4].isoformat() if r[4] else None
+                    }
+                    for r in rows
+                ]
+
