@@ -12,6 +12,7 @@ from src.services.registry import (
     shutdown_all_services
 )
 from src.services.reminder_worker import reminder_worker
+from src.services.circadian_worker import circadian_worker
 from src.api.routes import health_router, chat_router, sync_router
 
 load_dotenv()
@@ -63,10 +64,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar Telegram: {e}")
 
-    # 3. Inicia o Worker de Lembretes agendados
+    # 3. Inicia o Worker de Lembretes agendados e o Worker Circadiano
     rem_task = asyncio.create_task(reminder_worker(telegram_bot, db_service))
     background_tasks.add(rem_task)
     rem_task.add_done_callback(background_tasks.discard)
+
+    circ_task = asyncio.create_task(circadian_worker(telegram_bot, db_service))
+    background_tasks.add(circ_task)
+    circ_task.add_done_callback(background_tasks.discard)
 
     # 4. Inicia o MCP Session Manager para transporte HTTP Streamable
     from src.mcp.server import mcp

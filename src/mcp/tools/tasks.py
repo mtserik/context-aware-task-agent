@@ -1,10 +1,10 @@
-﻿"""
+"""
 MCP Task Tools — deterministic wrappers over TaskDomainService (TickTick).
 
 Zero-Token Principle: nenhuma chamada a LLM. Toda logica e REST pura contra o TickTick.
 """
 import logging
-from typing import Annotated, Optional
+from typing import Annotated, Optional, List
 
 from mcp.server.fastmcp import FastMCP
 
@@ -67,7 +67,38 @@ def register_task_tools(mcp: FastMCP) -> None:
                 priority=priority,
                 project_id=project_id,
             )
-            return result.message
         except Exception as e:
             logger.error("Erro em create_task: %s", e)
             return f"Erro ao criar tarefa: {str(e)}"
+
+    @mcp.tool(
+        name="create_focus_block",
+        description=(
+            "Cria um Bloco de Foco consolidado (Princípio Anti-Bagunça / Chunking) no TickTick. "
+            "Agrupa múltiplos itens em uma checklist interna dentro de UM único bloco de tempo (ex: 1h30, 2h), "
+            "alocando automaticamente no projeto correto (Mestrado, Trabalho, etc.) e evitando poluição da agenda."
+        ),
+    )
+    async def create_focus_block(
+        title: Annotated[str, "Título do bloco de foco (ex: 'Resolução PM003: Questões 35 a 39')"],
+        category: Annotated[str, "Categoria/Projeto do bloco: 'Mestrado', 'Trabalho', 'Pessoal'"] = "Mestrado",
+        duration_minutes: Annotated[int, "Duração estimada do bloco em minutos (default: 120 = 2h)"] = 120,
+        checklist: Annotated[Optional[List[str]], "Lista de itens ou questões específicas que compõem o bloco"] = None,
+        due_date: Annotated[Optional[str], "Data de realização do bloco em ISO 8601 (ex: '2026-09-07T09:00:00')"] = None,
+        priority: Annotated[int, "Prioridade: 0=None, 1=Low, 3=Medium, 5=High"] = 3,
+    ) -> str:
+        """Cria bloco de foco consolidado no TickTick."""
+        try:
+            svc = TaskDomainService()
+            result = await svc.create_focus_block(
+                title=title,
+                category=category,
+                duration_minutes=duration_minutes,
+                checklist=checklist,
+                due_date=due_date,
+                priority=priority
+            )
+            return result.message
+        except Exception as e:
+            logger.error("Erro em create_focus_block: %s", e)
+            return f"Erro ao criar bloco de foco: {str(e)}"

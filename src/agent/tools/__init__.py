@@ -12,6 +12,7 @@ from src.agent.tools.task_tools import (
     verify_task_creation,
     get_ticktick_metrics_via_mcp,
     batch_create_ticktick_tasks,
+    create_focus_block,
     TASK_TOOLS,
 )
 from src.agent.tools.knowledge_tools import (

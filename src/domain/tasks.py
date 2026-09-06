@@ -66,6 +66,61 @@ class TaskDomainService:
                 task_id=None
             )
 
+    async def create_focus_block(
+        self,
+        title: str,
+        category: str = "Mestrado",
+        duration_minutes: int = 120,
+        checklist: Optional[List[str]] = None,
+        due_date: Optional[str] = None,
+        priority: int = 3
+    ) -> TaskResult:
+        """
+        Cria um bloco de foco consolidado (Chunking Anti-Bagunça) no TickTick.
+        Em vez de poluir a agenda com dezenas de tarefas minúsculas, cria UM bloco de tempo
+        com estimativa de esforço, itens em checklist interna e alocação no projeto adequado.
+        """
+        target_project_id = None
+        try:
+            projects = await self.ticktick.list_projects()
+            cat_lower = category.lower()
+            for p in projects:
+                p_name = p.get("name", "").lower()
+                if cat_lower in p_name:
+                    target_project_id = p.get("id")
+                    break
+        except Exception:
+            pass
+
+        hours = duration_minutes / 60
+        duration_label = f"{duration_minutes} min ({hours:.1f}h)" if hours != int(hours) else f"{int(hours)}h"
+
+        desc_parts = [
+            f"⏱️ **Duração Estimada:** {duration_label}",
+            f"🏷️ **Contexto:** {category}"
+        ]
+
+        if checklist:
+            desc_parts.append("\n🎯 **Checklist do Bloco:**")
+            for item in checklist:
+                desc_parts.append(f"- [ ] {item}")
+
+        desc_parts.append("\n💡 *Regra de Foco Maeve: Executar em bloco único sem alternância de contexto.*")
+        content = "\n".join(desc_parts)
+
+        block_title = f"[{category}] {title}" if not title.startswith("[") else title
+
+        res = await self.create_task(
+            title=block_title,
+            content=content,
+            due_date=due_date,
+            priority=priority,
+            project_id=target_project_id
+        )
+        if res.success:
+            res.message = f"🎯 Bloco de Foco '{block_title}' criado com sucesso ({duration_label})! ID: {res.task_id}"
+        return res
+
     async def batch_create_tasks(self, tasks: List[Dict[str, Any]]) -> TaskResult:
         """
         Cria múltiplas tarefas ou subtarefas no TickTick em lote (MCP-first com fallback).

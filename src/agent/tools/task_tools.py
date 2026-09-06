@@ -112,6 +112,30 @@ async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
     result = await _task_domain.get_metrics(query_type=query_type, start_date=start_date)
     return result.to_agent_message()
 
+@tool
+async def create_focus_block(
+    title: str,
+    category: str = "Mestrado",
+    duration_minutes: int = 120,
+    checklist: Optional[List[str]] = None,
+    due_date: Optional[str] = None,
+    priority: int = 3
+):
+    """
+    Cria um Bloco de Foco consolidado (Princípio Anti-Bagunça / Chunking) no TickTick.
+    Agrupa tarefas em uma checklist interna dentro de UM único bloco de tempo (ex: 1h30, 2h),
+    alocando automaticamente no projeto correto (Mestrado, Trabalho, etc.) e evitando poluição da agenda.
+    """
+    result = await _task_domain.create_focus_block(
+        title=title,
+        category=category,
+        duration_minutes=duration_minutes,
+        checklist=checklist,
+        due_date=due_date,
+        priority=priority
+    )
+    return result.to_agent_message()
+
 from src.agent.tools.mcp_bridge import mcp_bridge
 
 _BASE_TASK_TOOLS = [
@@ -125,6 +149,7 @@ _BASE_TASK_TOOLS = [
     verify_task_creation,
     get_ticktick_metrics_via_mcp,
     batch_create_ticktick_tasks,
+    create_focus_block,
 ]
 
 # Combina ferramentas de domínio com ferramentas dinâmicas nativas do TickTick MCP (ex: get_project_with_undone_tasks)
