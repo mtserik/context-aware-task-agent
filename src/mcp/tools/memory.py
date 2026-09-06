@@ -1,4 +1,4 @@
-﻿"""
+"""
 MCP Memory Tools — deterministic wrappers over VectorDBService and KnowledgeDomainService.
 
 Zero-Token Principle: nenhuma chamada a modelos generativos e feita aqui.
@@ -122,3 +122,25 @@ def register_memory_tools(mcp: FastMCP) -> None:
         except Exception as e:
             logger.error("Erro em search_knowledge: %s", e)
             return f"Erro na busca textual: {str(e)}"
+
+    @mcp.tool(
+        name="sync_knowledge",
+        description=(
+            "Sincroniza o Vault do Obsidian com o banco de dados vetorial Qdrant. "
+            "Executa git pull no repositório do Vault, processa todos os arquivos Markdown "
+            "e gera/atualiza os embeddings no Qdrant via text-embedding-3-small. "
+            "Use sempre que houver novas notas, reestruturações no Vault ou quando "
+            "o usuário solicitar a atualização da memória semântica."
+        ),
+    )
+    async def sync_knowledge() -> str:
+        """Sincroniza o Obsidian Vault e reindexa as notas no Qdrant."""
+        try:
+            svc = KnowledgeDomainService()
+            result = await svc.sync_knowledge()
+            if result.success:
+                return result.message
+            return f"Falha na sincronização: {result.message}"
+        except Exception as e:
+            logger.error("Erro em sync_knowledge: %s", e)
+            return f"Erro ao sincronizar conhecimento com Qdrant: {str(e)}"
