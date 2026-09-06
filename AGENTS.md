@@ -816,4 +816,32 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
 #### 3. Verificação & Qualidade
 - Suíte completa de testes de domínio (`test_domain_services.py`): 12/12 aprovados.
 - Suíte completa de testes de regressão (`test_bugfixes_regression.py`): 13/13 aprovados.
-- Teste real com TickTick MCP: busca por tarefas de hoje recuperou com sucesso itens noturnos (ex: `Estudo Profundo - Descoberta (Vence: 04/09/2026 21:30)`).
+- Teste real com TickTick MCP: busca por tarefas de hoje recuperou com sucesso itens noturnos (ex: `Estudo Profundo - Descoberta (Vence: 04/09/2026 21:30)`).
+
+---
+
+### 9.8 Sprint 18: Dynamic MCP Tool Bridge & Router Sensível a Contexto com Inércia Conversacional e Desambiguação Ativa (2026-09-05)
+
+> **Objetivo:** 
+> 1. Implementar o `DynamicMCPToolBridge` para expor dinamicamente as ferramentas do servidor oficial TickTick MCP para o LangGraph sem necessidade de wrappers manuais em `task_tools.py`, garantindo paridade total de recursos com clientes MCP nativos (como Antigravity).
+> 2. Evoluir o Roteador de Intenções (`_router_node`) para ser orientado a entidades explícitas, contexto multi-turn e inércia de domínio (`active_domain`), eliminando falsos positivos onde palavras comuns (como "notas") desviam requisições do TickTick para o Obsidian.
+> 3. Implementar protocolo de desambiguação ativa para que a Maeve pergunte educadamente ao usuário quando houver real ambiguidade entre múltiplos domínios.
+
+#### 1. Dynamic MCP Tool Bridge (`src/agent/tools/mcp_bridge.py`)
+- **Problema:** A engine da Maeve dependia de wrappers manuais em `task_tools.py` para chamar métodos do TickTick. Listas do tipo `kind: "NOTE"` (como a lista `📒Notas`) e ferramentas nativas como `get_project_with_undone_tasks` não estavam disponíveis para a Maeve no Telegram, enquanto clientes MCP nativos (Antigravity) acessavam tudo perfeitamente.
+- **Solução Técnica:**
+  - Criação da classe `DynamicMCPToolBridge` capaz de converter JSON Schemas de ferramentas MCP em ferramentas de primeira classe do LangChain (`StructuredTool` / `BaseTool`).
+  - Descoberta dinâmica via `TickTickService.list_mcp_tools()` com catálogo de fallback estrito.
+  - Execução assíncrona desacoplada via `TickTickService.call_mcp_tool(tool_name, kwargs)`.
+  - Injeção das ferramentas MCP dinâmicas em `TASK_TOOLS` e `ALL_TOOLS`.
+
+#### 2. Roteador de Intenções com Inércia Contextual e Precedência de Entidades (`src/agent/engine.py`)
+- **Problema:** O roteamento de intenção era ingênuo e suscetível a colisões de palavras-chave. Uma mensagem como *"me traz tudo que tem na Lista Notas"* ativava o gatilho da palavra "notas", roteando incorretamente para `knowledge` (Obsidian) e privando o modelo de ferramentas do TickTick.
+- **Solução Técnica:**
+  - **Inércia Contextual de Domínio (`active_domain` no `AgentState`):** Rastreia o domínio ativo da thread conversacional. Se o usuário estiver operando tarefas no TickTick, requisições subsequentes sem mudança explícita de assunto mantêm o domínio `tasks`.
+  - **Precedência Máxima de Entidade:** Menção explícita a *"TickTick"* ou *"Obsidian"* sobrepõe substantivos genéricos.
+  - **Janela Multi-Turn de Contexto:** O prompt do router recebe os últimos turnos da conversa (Human e AI) para entender o fluxo de pensamento contínuo.
+  - **Desambiguação Ativa (Clarification Protocol):** Em casos de ambiguidade genuína no primeiro turno sem contexto prévio, o router classifica como `chat` com `clarification_needed: true` para que a Maeve pergunte amigavelmente ao usuário antes de tomar qualquer ação.
+
+#### 3. Verificação & Qualidade
+- Suíte de testes `test_sprint18_mcp_bridge_router.py` cobrindo conversão de schema, inércia de thread e desambiguação proativa.

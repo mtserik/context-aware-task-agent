@@ -31,6 +31,14 @@ async def lifespan(app: FastAPI):
     db_service = get_database_service()
     telegram_bot = get_telegram_service()
 
+    # 0. Descoberta dinâmica de ferramentas nativas do TickTick MCP
+    try:
+        from src.agent.tools.mcp_bridge import mcp_bridge
+        await mcp_bridge.discover_tools()
+        logger.info("✅ TickTick MCP Bridge sincronizado com ferramentas nativas.")
+    except Exception as e:
+        logger.warning(f"⚠️ TickTick MCP Bridge operando com catálogo de referência: {e}")
+
     # 1. Inicializa o motor da Maeve (com persistência Supabase ou memória)
     try:
         checkpointer = await db_service.get_checkpointer()

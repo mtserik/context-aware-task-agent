@@ -112,7 +112,9 @@ async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
     result = await _task_domain.get_metrics(query_type=query_type, start_date=start_date)
     return result.to_agent_message()
 
-TASK_TOOLS = [
+from src.agent.tools.mcp_bridge import mcp_bridge
+
+_BASE_TASK_TOOLS = [
     create_ticktick_task,
     batch_update_ticktick_tasks,
     create_ticktick_project,
@@ -124,3 +126,15 @@ TASK_TOOLS = [
     get_ticktick_metrics_via_mcp,
     batch_create_ticktick_tasks,
 ]
+
+# Combina ferramentas de domínio com ferramentas dinâmicas nativas do TickTick MCP (ex: get_project_with_undone_tasks)
+_seen_tool_names = set()
+_all_task_tools = []
+
+for tool in _BASE_TASK_TOOLS + mcp_bridge.get_tools():
+    t_name = getattr(tool, "name", str(tool))
+    if t_name not in _seen_tool_names:
+        _seen_tool_names.add(t_name)
+        _all_task_tools.append(tool)
+
+TASK_TOOLS = _all_task_tools

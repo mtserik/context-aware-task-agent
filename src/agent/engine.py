@@ -319,19 +319,21 @@ class MaeveAgent:
     async def _router_node(self, state: AgentState) -> Dict[str, Any]:
         """
         Classifica a intenção (domínio), complexidade do pedido e necessidade de planejamento estratégico (Sonnet)
-        considerando o contexto conversacional recente.
-        Preenche AgentState.current_intent, AgentState.routing_metadata e reseta AgentState.plan.
+        considerando o contexto conversacional recente, precedência de entidades e inércia de domínio.
+        Preenche AgentState.current_intent, AgentState.active_domain, AgentState.routing_metadata e reseta AgentState.plan.
         """
         messages = state.get('messages', [])
         last_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
         if not last_msg:
             return {
                 "current_intent": "chat",
-                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "chat", "reason": "No human message", "plan_required": False},
+                "active_domain": state.get("active_domain", "chat"),
+                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "chat", "reason": "No human message", "plan_required": False, "clarification_needed": False},
                 "plan": None,
             }
 
         text_clean = str(last_msg.content).strip().lower()
+        active_domain = state.get("active_domain") or state.get("current_intent")
 
         # Encontra a última mensagem da Maeve (assistente) antes da mensagem humana atual
         last_ai_msg = None
@@ -342,59 +344,64 @@ class MaeveAgent:
 
         ai_text = extract_text_from_message(last_ai_msg).lower() if last_ai_msg else ""
 
-        # 1. Heurística Contextual de Confirmação:
+        # 1. Precedência de Entidade Explícita:
+        # Se o usuário cita expressamente a plataforma, elimina qualquer ambiguidade de palavras comuns (ex: "notas" com "TickTick")
+        has_ticktick = any(k in text_clean for k in ["ticktick", "no ticktick", "do ticktick", "mcp ticktick", "mcp do ticktick"])
+        has_obsidian = any(k in text_clean for k in ["obsidian", "no obsidian", "do obsidian", "no vault", "segundo cérebro", "second brain"])
+
+        # 2. Heurística Contextual de Confirmação:
         # Se a Maeve perguntou/propôs uma ação ("quer que eu salve no Obsidian?") e o usuário confirma ("sim", "pode criar", "faz isso")
         confirmation_patterns = r"^(sim|pode|pode criar|pode salvar|pode fazer|faz isso|cria|salva|bora|manda bala|manda ver|com certeza|claro|por favor|confirmo|positivo|ok|ok pode|vai em frente)[\.\!\?]*$"
         is_confirmation = bool(re.match(confirmation_patterns, text_clean)) or any(text_clean.startswith(p) for p in ["sim,", "pode ", "faz ", "cria ", "salva "])
 
         if is_confirmation and last_ai_msg:
-            # Assistente acabou de propor criar nota ou documentar no Obsidian
-            # O raciocínio conceitual já foi concebido pela Maeve no turno anterior.
-            # A escrita da nota é puramente operacional -> FAST (Luna, 20x mais barato)
-            if any(k in ai_text for k in ["obsidian", "vault", "segundo cérebro", "second brain", "nota", "salvar esse", "salvar isso", "documentar"]):
+            if any(k in ai_text for k in ["obsidian", "vault", "segundo cérebro", "second brain", "nota", "salvar esse", "salvar isso", "documentar"]) and not has_ticktick:
                 logger.info("[Router Contextual]: Confirmação para ação de Obsidian detectada -> KNOWLEDGE / FAST (Luna)")
                 return {
                     "current_intent": "knowledge",
+                    "active_domain": "knowledge",
                     "routing_metadata": {
                         "complexity": 1,
                         "model": "fast",
                         "domain": "knowledge",
                         "reason": "Escrita operacional de nota no Obsidian a partir de contexto prévio (Luna)",
                         "plan_required": False,
+                        "clarification_needed": False,
                     },
                     "plan": None,
                 }
-            # Assistente acabou de propor criar/atualizar tarefa no TickTick
-            if any(k in ai_text for k in ["tarefa", "task", "ticktick", "agendar", "backlog", "time-blocking"]):
+            if any(k in ai_text for k in ["tarefa", "task", "ticktick", "agendar", "backlog", "time-blocking"]) or has_ticktick:
                 logger.info("[Router Contextual]: Confirmação para ação de Tarefa detectada -> TASKS / FAST (Luna)")
                 return {
                     "current_intent": "tasks",
+                    "active_domain": "tasks",
                     "routing_metadata": {
                         "complexity": 1,
                         "model": "fast",
                         "domain": "tasks",
                         "reason": "Confirmação contextual do usuário para tarefa no TickTick",
                         "plan_required": False,
+                        "clarification_needed": False,
                     },
                     "plan": None,
                 }
-            # Assistente acabou de propor agendar lembrete
             if any(k in ai_text for k in ["lembrete", "lembrar", "notificar"]):
                 logger.info("[Router Contextual]: Confirmação para ação de Lembrete detectada -> REMINDERS / FAST (Luna)")
                 return {
                     "current_intent": "reminders",
+                    "active_domain": "reminders",
                     "routing_metadata": {
                         "complexity": 1,
                         "model": "fast",
                         "domain": "reminders",
                         "reason": "Confirmação contextual do usuário para agendar lembrete",
                         "plan_required": False,
+                        "clarification_needed": False,
                     },
                     "plan": None,
                 }
 
-        # 2. Heurística Fast-Path: O(1) para saudações e acks isolados
-        # NUNCA aplicar se houver pergunta pendente do assistente na conversa anterior
+        # 3. Heurística Fast-Path: O(1) para saudações e acks isolados
         greeting_patterns = r"^(oi|olá|ola|bom dia|boa tarde|boa noite|valeu|obrigado|tchau|até mais|falou|ok|show|beleza|blz)(\s+(maeve|tudo bem|td bem))?[\.\!\?]*$"
         has_pending_question = bool(last_ai_msg and "?" in ai_text)
 
@@ -402,54 +409,60 @@ class MaeveAgent:
             print(f"[Router Fast-Path]: Mensagem simples ('{text_clean[:30]}') -> Usando FAST sem chamar LLM.")
             return {
                 "current_intent": "chat",
+                "active_domain": active_domain or "chat",
                 "routing_metadata": {
                     "complexity": 1,
                     "model": "fast",
                     "domain": "chat",
                     "reason": "Heuristic fast-path: trivial query/greeting",
                     "plan_required": False,
+                    "clarification_needed": False,
                 },
                 "plan": None,
             }
 
-        # 3. LLM Router com Injeção de Contexto Recente (resolve ambiguidades e pronomes "isso", "aquilo")
-        recent_context = ""
-        if last_ai_msg:
-            ai_snippet = extract_text_from_message(last_ai_msg)[:350].strip()
-            recent_context = f"\nContexto Recente - Última Mensagem da Maeve (Assistente):\n\"{ai_snippet}\"\n"
+        # 4. Construção de Contexto Multi-Turn (Thread History para Inércia)
+        recent_turns = []
+        for m in messages[-7:-1]:
+            role = "Erik" if isinstance(m, HumanMessage) else "Maeve"
+            t = extract_text_from_message(m).strip()
+            if t:
+                recent_turns.append(f"- {role}: {t[:250]}")
+        thread_context = "\n".join(recent_turns) if recent_turns else "[Início de nova conversa]"
 
         routing_prompt = f"""
-        Analise o pedido abaixo considerando o contexto recente da conversa e responda APENAS em JSON no formato:
+        Analise o pedido do usuário abaixo considerando a conversa recente, a inércia do tópico e precedência de entidades.
+        Responda APENAS em JSON estrito no formato:
         {{
             "complexity": int (1 a 5),
             "model": "fast" | "smart",
             "domain": "tasks" | "knowledge" | "search" | "reminders" | "chat" | "general",
             "reason": "string curta",
-            "plan_required": true | false
+            "plan_required": true | false,
+            "clarification_needed": true | false
         }}
 
-        Diretrizes de Domínio:
-        - tasks: TickTick, listas de afazeres, subtarefas, projetos, time-blocking, hábitos, conclusão.
-        - knowledge: Obsidian, notas, Vault, pastas de notas, resumos de conhecimento pessoal, criar ou mover notas.
-        - search: Pesquisa na web, notícias, fatos em tempo real, deep research.
-        - reminders: Lembretes temporais no Telegram ("me lembra amanhã às 10h").
-        - chat: Conversas reflexivas, saudações, bate-papo sem necessidade de ferramentas.
-        - general: Pedidos híbridos que misturam múltiplos domínios ou continuam ações anteriores.
+        # REGRAS MANDATÓRIAS DE DOMÍNIO & INÉRCIA:
+        1. PRECEDÊNCIA DE ENTIDADE EXPLÍCITA:
+           - Se o usuário cita 'TickTick', 'no TickTick', 'do TickTick', 'MCP do TickTick', o domínio É OBRIGATORIAMENTE 'tasks'.
+           - Se o usuário cita 'Obsidian', 'no Vault', 'Segundo Cérebro', o domínio É OBRIGATORIAMENTE 'knowledge'.
+           - NUNCA envie um pedido citando 'TickTick' para 'knowledge', mesmo que contenha a palavra 'notas' ou 'caderno'.
 
-        Diretrizes de Complexidade & Planejamento Estratégico (Planner vs Executor):
-        - plan_required = false (Execução Operacional Direta via Luna):
-          * Operações diretas com ferramentas: criar tarefas pontuais ou em lote no TickTick, listar tarefas, concluir tarefas.
-          * Operações no Obsidian: criar notas a partir de resumos/conversas, mover notas, listar notas.
-          * Consultas na Web, agendamento de lembretes, saudações e comandos objetivos.
-          * Com o TickTick MCP, a Luna é plenamente capaz de criar tarefas e projetos diretamente sem necessidade de planejamento prévio se o escopo for direto.
-        - plan_required = true (Planejamento Estratégico via Claude Sonnet -> Execução Luna):
-          * Pedidos de alta complexidade conceitual, arquitetural ou organizacional (complexity >= 3).
-          * Criação ou estruturação de novos projetos com definição de épicos, histórias, entregáveis e dimensionamento de prazos/datas.
-          * Planejamento arquitetural de software, modelagem de banco de dados ou design de sistemas.
-          * Deduções matemáticas, análise estatística avançada ou ciência de dados rigorosa.
-          * Consolidação profunda de múltiplos conceitos complexos em nova síntese.
-{recent_context}
-        Pedido Atual do Usuário:
+        2. INÉRCIA CONVERSACIONAL (CONTINUIDADE DE TÓPICO):
+           - Inércia Atual da Thread: '{active_domain or 'Nenhum'}'
+           - Se a conversa recente estava tratando de tarefas, projetos ou itens no TickTick (Inércia = 'tasks') e a mensagem atual continua operando ou consultando sem citar outra ferramenta (ex: 'me traz tudo que tem na lista notas', 'muda a prioridade', 'agenda pra amanhã', 'conclui essa'), MANTENHA o domínio 'tasks'.
+           - Da mesma forma, se a conversa estava tratando do Vault/Obsidian e o usuário fala de notas/páginas, mantenha 'knowledge'.
+
+        3. DESAMBIGUAÇÃO PROATIVA:
+           - Se for um primeiro turno (sem inércia prévia) e a mensagem for ambígua entre plataformas (ex: 'o que tem em notas?' ou 'mostra minhas notas' sem especificar se é TickTick ou Obsidian), responda:
+             "domain": "chat",
+             "clarification_needed": true,
+             "reason": "Ambiguidade entre listas do TickTick e notas do Obsidian Vault"
+
+        # Histórico Recente da Thread (Últimos Turnos):
+{thread_context}
+
+        # Pedido Atual do Usuário:
         "{last_msg.content}"
         """
 
@@ -465,27 +478,43 @@ class MaeveAgent:
                 decision = json.loads(clean_json)
 
             if not isinstance(decision, dict) or "model" not in decision:
-                decision = {"complexity": 1, "model": "fast", "domain": "general", "reason": "Formato não-padrão", "plan_required": False}
+                decision = {"complexity": 1, "model": "fast", "domain": "general", "reason": "Formato não-padrão", "plan_required": False, "clarification_needed": False}
 
             domain: IntentDomain = decision.get("domain", "general")
+
+            # Trava determinística de precedência de entidade explícita
+            if has_ticktick and not has_obsidian:
+                domain = "tasks"
+                decision["domain"] = "tasks"
+                decision["reason"] = "Precedência determinística de entidade TickTick"
+            elif has_obsidian and not has_ticktick:
+                domain = "knowledge"
+                decision["domain"] = "knowledge"
+                decision["reason"] = "Precedência determinística de entidade Obsidian"
+
             plan_required = bool(decision.get("plan_required", False))
-            # Se complexidade >= 3 e não for uma simples confirmação, exige planejamento estratégico
             if decision.get("complexity", 1) >= 3 and not is_confirmation:
                 plan_required = True
             decision["plan_required"] = plan_required
+            decision["clarification_needed"] = bool(decision.get("clarification_needed", False))
 
-            print(f"[Router]: Complexidade {decision.get('complexity', 1)} | Domínio: {domain.upper()} | Plan Required: {plan_required} -> {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
+            print(f"[Router]: Complexidade {decision.get('complexity', 1)} | Domínio: {domain.upper()} (Inércia: {active_domain}) | Plan: {plan_required} | Clarify: {decision['clarification_needed']} -> {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
+
+            new_active_domain = domain if domain in ["tasks", "knowledge", "search", "reminders"] else (active_domain or "general")
 
             return {
                 "current_intent": domain,
+                "active_domain": new_active_domain,
                 "routing_metadata": decision,
                 "plan": None,
             }
         except Exception as e:
             print(f"[Router Warning]: Erro no Router: {e}. Defaulting to Fast/General.")
+            fallback_domain = "tasks" if has_ticktick else ("knowledge" if has_obsidian else (active_domain or "general"))
             return {
-                "current_intent": "general",
-                "routing_metadata": {"model": "fast", "complexity": 1, "domain": "general", "reason": "Fallback due to error", "plan_required": False},
+                "current_intent": fallback_domain,
+                "active_domain": fallback_domain,
+                "routing_metadata": {"model": "fast", "complexity": 1, "domain": fallback_domain, "reason": "Fallback due to error", "plan_required": False, "clarification_needed": False},
                 "plan": None,
             }
 
@@ -643,6 +672,16 @@ class MaeveAgent:
 
         if plan_directive:
             dynamic_prompt += plan_directive
+
+        routing_meta = state.get("routing_metadata") or {}
+        if routing_meta.get("clarification_needed"):
+            clarification_directive = (
+                "\n\n# PROTOCOLO DE DESAMBIGUAÇÃO ATIVA:\n"
+                "Foi detectada ambiguidade real no pedido do Erik (por exemplo, dúvida se o pedido refere-se a notas/conhecimento no Obsidian Vault ou a uma lista/tarefas no TickTick).\n"
+                "NÃO tente adivinhar ou executar ferramentas no escuro.\n"
+                "Pergunte educadamente, de forma acolhedora, humana e direta em 1 a 2 parágrafos curtos para o Erik esclarecer exatamente em qual plataforma ou lista ele deseja atuar."
+            )
+            dynamic_prompt += clarification_directive
 
         if is_anthropic:
             # Anthropic Prompt Caching: Estrutura o SystemMessage em blocos com cache_control no bloco estático (>1024 tokens)

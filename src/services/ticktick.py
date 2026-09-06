@@ -62,26 +62,39 @@ class TickTickService:
 
     async def get_tasks(self, project_id: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Lista as tarefas pendentes usando o endpoint de filtragem global (mais eficiente).
+        Lista as tarefas e notas pendentes. Prefere TickTick MCP Oficial (get_project_with_undone_tasks)
+        quando um project_id é informado, garantindo suporte pleno a projetos do tipo NOTE e TASK.
         """
+        # 1. Tentativa via TickTick MCP Oficial para projetos específicos (suporta TASK e NOTE)
+        if project_id and self.mcp_token:
+            try:
+                res = await self.call_mcp_tool("get_project_with_undone_tasks", {"project_id": project_id})
+                if isinstance(res, dict) and "tasks" in res:
+                    tasks = res.get("tasks", [])
+                    print(f"✅ [TickTick MCP] {len(tasks)} itens recuperados para o projeto {project_id}.")
+                    return tasks
+            except Exception as mcp_err:
+                print(f"⚠️ [TickTick] Falha ao listar tarefas via MCP ({mcp_err}). Usando REST fallback...")
+
         if not self.access_token:
             raise Exception("Access Token não configurado.")
 
         headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        # Para projeto específico no REST, o endpoint /project/{id}/data é muito superior ao /task/filter
+        # pois retorna tanto tarefas normais quanto notas cadastradas
+        if project_id:
+            return await self._get_tasks_fallback(project_id)
         
         # Payload para o filtro global
         # status: [0] = pendentes
         payload = {"status": [0]}
-        
-        if project_id:
-            payload["projectIds"] = [project_id]
         
         # Se quisermos filtrar por data no servidor (ex: atrasadas/hoje)
         if end_date:
             payload["endDate"] = end_date # Formato: yyyy-MM-dd'T'HH:mm:ssZ
 
         client = self._get_client()
-        # Usamos o endpoint de filtro para evitar iterar por cada projeto
         response = await client.post(f"{self.base_url}/task/filter", json=payload, headers=headers)
         
         if response.status_code == 200:
@@ -89,7 +102,6 @@ class TickTickService:
             print(f"DEBUG [TickTick]: {len(tasks)} tarefas pendentes encontradas via filtro global.")
             return tasks
         else:
-            # Fallback para o método de projeto se o filtro falhar (algumas contas/versões da API)
             print(f"⚠️ Filtro global falhou ({response.status_code}). Usando fallback por projeto...")
             return await self._get_tasks_fallback(project_id)
 
