@@ -844,4 +844,33 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
   - **Desambiguação Ativa (Clarification Protocol):** Em casos de ambiguidade genuína no primeiro turno sem contexto prévio, o router classifica como `chat` com `clarification_needed: true` para que a Maeve pergunte amigavelmente ao usuário antes de tomar qualquer ação.
 
 #### 3. Verificação & Qualidade
-- Suíte de testes `test_sprint18_mcp_bridge_router.py` cobrindo conversão de schema, inércia de thread e desambiguação proativa.
+- Suíte de testes `test_sprint18_mcp_bridge_router.py` cobrindo conversão de schema, inércia de thread e desambiguação proativa.
+
+---
+
+### 9.9 Hotfix Sprint 18.1: Desacoplamento da Heurística de Confirmação & Proteção de Criação de Notas no Obsidian (2026-09-05)
+
+> **Diagnóstico & Causa-Raiz:**
+> Após o deploy da Sprint 18, ao solicitar no Telegram a criação de notas no Obsidian (ex: *"cria uma nota sobre..."* ou *"cria uma nota no Obsidian..."*), a Maeve respondia informando incapacidade de criar notas no Obsidian.
+> A investigação identificou colisão na heurística contextual de confirmação em `src/agent/engine.py`:
+> 1. A regra `is_confirmation` utilizava `text_clean.startswith("cria ")`, interceptando novos comandos de criação de notas e classificando-os erroneamente como confirmações de propostas anteriores.
+> 2. Se a mensagem anterior da Maeve tratasse de tarefas no TickTick (ex: teste da lista Notas), o bloco de confirmação avaliava `ai_text` contendo "tarefa" ou "ticktick" e retornava prematuramente `current_intent: "tasks"`, antes do nó router LLM ou da checagem de precedência de entidade.
+> 3. Sob o domínio `tasks`, o `_call_model_node` realizava o Dynamic Tool Binding injetando estritamente `TASK_TOOLS` (TickTick) e excluindo `KNOWLEDGE_TOOLS` (Obsidian), deixando a Luna sem a ferramenta `create_obsidian_note`.
+
+#### Soluções Implementadas:
+1. **Restrição Rigorosa de Confirmações Curtas:**
+   - A heurística `is_confirmation` agora exige obrigatoriamente:
+     - Pergunta ou proposta pendente da Maeve no turno anterior (`has_pending_question = bool(last_ai_msg and ("?" in ai_text or "..."))`).
+     - Mensagem curta de confirmação (`len(text_clean) <= 35`), impedindo que comandos novos e elaborados com parâmetros caiam nessa rota.
+2. **Precedência e Desacoplamento de Entidades:**
+   - Menção a Obsidian (`has_obsidian`) ou TickTick (`has_ticktick`) prevalece estritamente no bloco de confirmação e nos guard rails determinísticos pós-router.
+   - Requisições híbridas (ambas as entidades presentes) roteiam deterministicamente para `general` (expondo `ALL_TOOLS`).
+3. **Proteção Semântica contra Armadilha de Inércia (Notas vs Tarefas):**
+   - No prompt do router LLM, foram restabelecidas as definições canônicas de domínio com distinção explícita entre notas conceituais (`knowledge`) e tarefas operacionais (`tasks`).
+   - Adicionada trava determinística pós-router: se a mensagem iniciar com padrões explícitos de criação de nota (`is_direct_note_creation`) e não citar TickTick, caso a inércia a classifique indevidamente em `tasks`, ela é corrigida deterministicamente para `knowledge`.
+4. **Bateria de Testes de Regressão:**
+   - Expandido `test_sprint18_mcp_bridge_router.py` com testes para:
+     - Comando `cria uma nota...` após contexto de tarefas do TickTick (assegura `knowledge`).
+     - Comando `cria uma nota no Obsidian...` com histórico de tarefas prévio (assegura `knowledge`).
+     - Confirmação rápida de proposta de salvamento no Obsidian Vault (assegura `knowledge`).
+     - Confirmação rápida de proposta de agendamento de tarefa no TickTick (assegura `tasks`).

@@ -187,6 +187,113 @@ class TestSprint18ContextualRouter(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_note_creation_command_not_hijacked_by_task_context(self):
+        """Comando 'cria uma nota...' NÃO deve ser capturado como confirmação de tarefa nem aprisionado na inércia do TickTick."""
+        mock_response = MagicMock()
+        # Mesmo se o LLM equivocadamente respondesse 'tasks' pela inércia prévia
+        mock_response.content = json.dumps({
+            "complexity": 1,
+            "model": "fast",
+            "domain": "tasks",
+            "reason": "Inércia",
+            "plan_required": False,
+            "clarification_needed": False
+        })
+        self.agent.router_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        state: AgentState = {
+            "messages": [
+                HumanMessage(content="me traz tudo que tem na Lista Notas do TickTick"),
+                AIMessage(content="Aqui estão as tarefas da lista Notas no TickTick: 1. Comprar leite"),
+                HumanMessage(content="cria uma nota sobre a reunião de arquitetura de software")
+            ],
+            "current_intent": "tasks",
+            "active_domain": "tasks",
+            "routing_metadata": None,
+            "plan": None
+        }
+
+        async def run():
+            decision = await self.agent._router_node(state)
+            self.assertEqual(decision["current_intent"], "knowledge")
+            self.assertEqual(decision["active_domain"], "knowledge")
+
+        asyncio.run(run())
+
+    def test_explicit_obsidian_with_prior_task_history(self):
+        """Comando 'cria uma nota no Obsidian...' com histórico de tarefas prévio DEVE rotear para 'knowledge'."""
+        mock_response = MagicMock()
+        mock_response.content = json.dumps({
+            "complexity": 1,
+            "model": "fast",
+            "domain": "tasks",
+            "reason": "Inércia",
+            "plan_required": False,
+            "clarification_needed": False
+        })
+        self.agent.router_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        state: AgentState = {
+            "messages": [
+                HumanMessage(content="Quais tarefas eu tenho hoje?"),
+                AIMessage(content="Você tem 2 tarefas agendadas no TickTick."),
+                HumanMessage(content="cria uma nota no Obsidian sobre as metas de Q4")
+            ],
+            "current_intent": "tasks",
+            "active_domain": "tasks",
+            "routing_metadata": None,
+            "plan": None
+        }
+
+        async def run():
+            decision = await self.agent._router_node(state)
+            self.assertEqual(decision["current_intent"], "knowledge")
+            self.assertEqual(decision["active_domain"], "knowledge")
+
+        asyncio.run(run())
+
+    def test_confirmation_of_obsidian_proposal(self):
+        """Confirmação curta para proposta de salvar no Vault/Obsidian roteia para 'knowledge'."""
+        state: AgentState = {
+            "messages": [
+                HumanMessage(content="Acabei de ter um insight sobre a arquitetura do sistema"),
+                AIMessage(content="Isso é ouro, Erik! Quer que eu documente essa decisão no seu Obsidian Vault?"),
+                HumanMessage(content="pode criar")
+            ],
+            "current_intent": "knowledge",
+            "active_domain": "knowledge",
+            "routing_metadata": None,
+            "plan": None
+        }
+
+        async def run():
+            decision = await self.agent._router_node(state)
+            self.assertEqual(decision["current_intent"], "knowledge")
+            self.assertEqual(decision["active_domain"], "knowledge")
+
+        asyncio.run(run())
+
+    def test_confirmation_of_task_proposal(self):
+        """Confirmação curta para proposta de agendar tarefa no TickTick roteia para 'tasks'."""
+        state: AgentState = {
+            "messages": [
+                HumanMessage(content="Preciso revisar o PR #42 amanhã"),
+                AIMessage(content="Quer que eu agende essa tarefa no seu TickTick para amanhã?"),
+                HumanMessage(content="sim, pode agendar")
+            ],
+            "current_intent": "tasks",
+            "active_domain": "tasks",
+            "routing_metadata": None,
+            "plan": None
+        }
+
+        async def run():
+            decision = await self.agent._router_node(state)
+            self.assertEqual(decision["current_intent"], "tasks")
+            self.assertEqual(decision["active_domain"], "tasks")
+
+        asyncio.run(run())
+
 
 class TestSprint18TickTickServiceMCPFirst(unittest.TestCase):
     """Testa o comportamento MCP-First no TickTickService.get_tasks()."""

@@ -346,16 +346,24 @@ class MaeveAgent:
 
         # 1. Precedência de Entidade Explícita:
         # Se o usuário cita expressamente a plataforma, elimina qualquer ambiguidade de palavras comuns (ex: "notas" com "TickTick")
-        has_ticktick = any(k in text_clean for k in ["ticktick", "no ticktick", "do ticktick", "mcp ticktick", "mcp do ticktick"])
-        has_obsidian = any(k in text_clean for k in ["obsidian", "no obsidian", "do obsidian", "no vault", "segundo cérebro", "second brain"])
+        has_ticktick = any(k in text_clean for k in ["ticktick", "tick tick", "mcp ticktick"])
+        has_obsidian = any(k in text_clean for k in ["obsidian", "vault", "segundo cérebro", "second brain"])
+
+        # Identificação de comandos diretos de criação (não confundir com confirmações curtas)
+        is_direct_note_creation = any(text_clean.startswith(p) for p in ["cria uma nota", "criar uma nota", "crie uma nota", "anota aí", "anota isso", "anota que", "nova nota"])
+        is_direct_task_creation = any(text_clean.startswith(p) for p in ["cria uma tarefa", "criar uma tarefa", "crie uma tarefa", "agenda uma tarefa", "nova tarefa", "agenda aí", "agenda para"])
 
         # 2. Heurística Contextual de Confirmação:
-        # Se a Maeve perguntou/propôs uma ação ("quer que eu salve no Obsidian?") e o usuário confirma ("sim", "pode criar", "faz isso")
-        confirmation_patterns = r"^(sim|pode|pode criar|pode salvar|pode fazer|faz isso|cria|salva|bora|manda bala|manda ver|com certeza|claro|por favor|confirmo|positivo|ok|ok pode|vai em frente)[\.\!\?]*$"
-        is_confirmation = bool(re.match(confirmation_patterns, text_clean)) or any(text_clean.startswith(p) for p in ["sim,", "pode ", "faz ", "cria ", "salva "])
+        # Aplica-se APENAS se a Maeve tiver feito uma pergunta/proposta no turno anterior E a resposta for curta (ack)
+        has_pending_question = bool(last_ai_msg and ("?" in ai_text or any(p in ai_text for p in ["quer que", "deseja que", "posso criar", "posso salvar", "posso agendar", "posso registrar", "devo criar", "devo salvar"])))
+        is_short_ack = len(text_clean) <= 35
+        confirmation_patterns = r"^(sim|pode|pode criar|pode salvar|pode fazer|faz isso|cria|salva|bora|manda bala|manda ver|com certeza|claro|por favor|confirmo|positivo|ok|ok pode|vai em frente|perfeito|fechado|isso|beleza|show)[\.\!\?]*$"
+        is_confirmation = has_pending_question and is_short_ack and (
+            bool(re.match(confirmation_patterns, text_clean)) or any(text_clean.startswith(p) for p in ["sim,", "pode ", "faz ", "ok "])
+        )
 
         if is_confirmation and last_ai_msg:
-            if any(k in ai_text for k in ["obsidian", "vault", "segundo cérebro", "second brain", "nota", "salvar esse", "salvar isso", "documentar"]) and not has_ticktick:
+            if has_obsidian or (any(k in ai_text for k in ["obsidian", "vault", "segundo cérebro", "second brain", "salvar esse", "salvar isso", "documentar"]) and not has_ticktick):
                 logger.info("[Router Contextual]: Confirmação para ação de Obsidian detectada -> KNOWLEDGE / FAST (Luna)")
                 return {
                     "current_intent": "knowledge",
@@ -370,7 +378,7 @@ class MaeveAgent:
                     },
                     "plan": None,
                 }
-            if any(k in ai_text for k in ["tarefa", "task", "ticktick", "agendar", "backlog", "time-blocking"]) or has_ticktick:
+            if has_ticktick or (any(k in ai_text for k in ["tarefa", "task", "ticktick", "agendar", "backlog", "time-blocking"]) and not has_obsidian):
                 logger.info("[Router Contextual]: Confirmação para ação de Tarefa detectada -> TASKS / FAST (Luna)")
                 return {
                     "current_intent": "tasks",
@@ -385,7 +393,7 @@ class MaeveAgent:
                     },
                     "plan": None,
                 }
-            if any(k in ai_text for k in ["lembrete", "lembrar", "notificar"]):
+            if any(k in ai_text for k in ["lembrete", "lembrar", "notificar"]) and not has_obsidian and not has_ticktick:
                 logger.info("[Router Contextual]: Confirmação para ação de Lembrete detectada -> REMINDERS / FAST (Luna)")
                 return {
                     "current_intent": "reminders",
@@ -403,7 +411,6 @@ class MaeveAgent:
 
         # 3. Heurística Fast-Path: O(1) para saudações e acks isolados
         greeting_patterns = r"^(oi|olá|ola|bom dia|boa tarde|boa noite|valeu|obrigado|tchau|até mais|falou|ok|show|beleza|blz)(\s+(maeve|tudo bem|td bem))?[\.\!\?]*$"
-        has_pending_question = bool(last_ai_msg and "?" in ai_text)
 
         if not has_pending_question and re.match(greeting_patterns, text_clean):
             print(f"[Router Fast-Path]: Mensagem simples ('{text_clean[:30]}') -> Usando FAST sem chamar LLM.")
@@ -442,22 +449,36 @@ class MaeveAgent:
             "clarification_needed": true | false
         }}
 
+        # DEFINIÇÕES DE DOMÍNIO:
+        - tasks: TickTick, gerenciamento de afazeres, tarefas operacionais, subtarefas, projetos, prazos, prioridades, status de conclusão, time-blocking.
+        - knowledge: Obsidian Vault, criação e gestão de notas de conhecimento, registros de reuniões, ideias, estudos, documentação técnica, pastas do Vault, Segundo Cérebro.
+        - search: Pesquisa na web via Tavily, notícias, fatos em tempo real, deep research.
+        - reminders: Lembretes pontuais no Telegram ("me lembra amanhã às 10h").
+        - chat: Conversas reflexivas, saudações, bate-papo sem ferramentas.
+        - general: Solicitações que combinam múltiplos domínios ou continuam fluxos anteriores.
+
         # REGRAS MANDATÓRIAS DE DOMÍNIO & INÉRCIA:
         1. PRECEDÊNCIA DE ENTIDADE EXPLÍCITA:
            - Se o usuário cita 'TickTick', 'no TickTick', 'do TickTick', 'MCP do TickTick', o domínio É OBRIGATORIAMENTE 'tasks'.
            - Se o usuário cita 'Obsidian', 'no Vault', 'Segundo Cérebro', o domínio É OBRIGATORIAMENTE 'knowledge'.
            - NUNCA envie um pedido citando 'TickTick' para 'knowledge', mesmo que contenha a palavra 'notas' ou 'caderno'.
+           - NUNCA envie um pedido citando 'Obsidian' para 'tasks'.
 
-        2. INÉRCIA CONVERSACIONAL (CONTINUIDADE DE TÓPICO):
+        2. NOTAS vs TAREFAS (DISTINÇÃO SEMÂNTICA):
+           - Comandos como 'cria uma nota sobre...', 'anota isso...', 'registra essa reflexão/reunião/estudo', 'salva uma nota com...' referem-se à base de conhecimento do Obsidian Vault (domínio 'knowledge'), exceto se o usuário citar expressamente 'TickTick'.
+           - Comandos como 'cria uma tarefa...', 'agenda para as 15h', 'adiciona na minha lista de afazeres', 'conclui a tarefa' referem-se ao gerenciador de tarefas (domínio 'tasks').
+
+        3. INÉRCIA CONVERSACIONAL (CONTINUIDADE DE TÓPICO):
            - Inércia Atual da Thread: '{active_domain or 'Nenhum'}'
-           - Se a conversa recente estava tratando de tarefas, projetos ou itens no TickTick (Inércia = 'tasks') e a mensagem atual continua operando ou consultando sem citar outra ferramenta (ex: 'me traz tudo que tem na lista notas', 'muda a prioridade', 'agenda pra amanhã', 'conclui essa'), MANTENHA o domínio 'tasks'.
-           - Da mesma forma, se a conversa estava tratando do Vault/Obsidian e o usuário fala de notas/páginas, mantenha 'knowledge'.
+           - Se a conversa recente estava tratando de tarefas, projetos ou itens no TickTick (Inércia = 'tasks') e a mensagem atual continua operando ou consultando afazeres/tarefas sem citar outra ferramenta (ex: 'me traz tudo que tem na lista notas', 'muda a prioridade', 'agenda pra amanhã', 'conclui essa'), MANTENHA o domínio 'tasks'.
+           - A inércia de 'tasks' NÃO deve capturar novos comandos de criação de notas de conhecimento (ex: 'cria uma nota sobre...', 'anota o resumo'), que pertencem a 'knowledge'.
+           - Se a conversa recente tratava do Vault/Obsidian e o usuário fala de notas/páginas/pastas, mantenha 'knowledge'.
 
-        3. DESAMBIGUAÇÃO PROATIVA:
-           - Se for um primeiro turno (sem inércia prévia) e a mensagem for ambígua entre plataformas (ex: 'o que tem em notas?' ou 'mostra minhas notas' sem especificar se é TickTick ou Obsidian), responda:
+        4. DESAMBIGUAÇÃO PROATIVA:
+           - Se for um primeiro turno (sem inércia prévia) e a mensagem for ambígua entre plataformas (ex: 'o que tem em notas?' ou 'mostra minhas notas' sem especificar se é a lista de notas do TickTick ou as notas do Obsidian Vault), responda:
              "domain": "chat",
              "clarification_needed": true,
-             "reason": "Ambiguidade entre listas do TickTick e notas do Obsidian Vault"
+             "reason": "Ambiguidade entre lista de notas do TickTick e notas do Obsidian Vault"
 
         # Histórico Recente da Thread (Últimos Turnos):
 {thread_context}
@@ -491,6 +512,20 @@ class MaeveAgent:
                 domain = "knowledge"
                 decision["domain"] = "knowledge"
                 decision["reason"] = "Precedência determinística de entidade Obsidian"
+            elif has_obsidian and has_ticktick:
+                domain = "general"
+                decision["domain"] = "general"
+                decision["reason"] = "Operação híbrida envolvendo TickTick e Obsidian"
+            elif is_direct_note_creation and not has_ticktick and domain == "tasks":
+                logger.info("[Router]: Correção determinística: criação de nota não deve ser aprisionada em 'tasks' -> KNOWLEDGE")
+                domain = "knowledge"
+                decision["domain"] = "knowledge"
+                decision["reason"] = "Criação de nota direcionada para o Obsidian (knowledge)"
+            elif is_direct_task_creation and not has_obsidian and domain == "knowledge":
+                logger.info("[Router]: Correção determinística: criação de tarefa não deve ser aprisionada em 'knowledge' -> TASKS")
+                domain = "tasks"
+                decision["domain"] = "tasks"
+                decision["reason"] = "Criação de tarefa direcionada para o TickTick (tasks)"
 
             plan_required = bool(decision.get("plan_required", False))
             if decision.get("complexity", 1) >= 3 and not is_confirmation:
@@ -510,7 +545,7 @@ class MaeveAgent:
             }
         except Exception as e:
             print(f"[Router Warning]: Erro no Router: {e}. Defaulting to Fast/General.")
-            fallback_domain = "tasks" if has_ticktick else ("knowledge" if has_obsidian else (active_domain or "general"))
+            fallback_domain = "tasks" if has_ticktick else ("knowledge" if (has_obsidian or is_direct_note_creation) else (active_domain or "general"))
             return {
                 "current_intent": fallback_domain,
                 "active_domain": fallback_domain,
