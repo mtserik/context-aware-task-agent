@@ -41,6 +41,7 @@ from src.mcp.tools.memory import register_memory_tools
 from src.mcp.tools.tasks import register_task_tools
 from src.mcp.tools.context import register_context_tools
 from src.mcp.tools.decisions import register_decision_tools
+from src.mcp.tools.culture import register_culture_tools
 from src.mcp.resources.providers import register_resources
 from src.mcp.prompts.persona import register_prompts
 
@@ -71,6 +72,7 @@ def create_mcp_server() -> FastMCP:
     register_task_tools(mcp)
     register_context_tools(mcp)
     register_decision_tools(mcp)
+    register_culture_tools(mcp)
 
     # Registra Resources de dados (persona, briefing, temporal, vault)
     register_resources(mcp)
@@ -80,9 +82,9 @@ def create_mcp_server() -> FastMCP:
 
     logger.info(
         "Maeve FastMCP Server inicializado com %d tools, resources e prompts.",
-        10,  # memory_search, memory_store, search_knowledge, sync_knowledge,
+        11,  # memory_search, memory_store, search_knowledge, sync_knowledge,
              # list_today_tasks, create_task, get_personal_context, set_reminder,
-             # log_decision, batch_move_obsidian_notes
+             # log_decision, batch_move_obsidian_notes, log_cultural_review
     )
     return mcp
 

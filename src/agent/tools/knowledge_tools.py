@@ -1,8 +1,10 @@
 from typing import List, Dict
 from langchain_core.tools import tool
 from src.domain.knowledge import KnowledgeDomainService
+from src.services.culture import CultureService
 
 _knowledge_domain = KnowledgeDomainService()
+_culture_service = CultureService()
 
 @tool
 async def create_obsidian_note(title: str, content: str, folder: str = "Inbox"):
@@ -67,6 +69,14 @@ async def sync_obsidian_knowledge():
     result = await _knowledge_domain.sync_knowledge()
     return result.to_agent_message()
 
+@tool
+async def log_cultural_review(title: str, media_type: str = "filme", review_text: str = "", rating: str = "4.5/5"):
+    """Registra uma resenha cultural de filme, série, livro ou jogo com busca automática de capa HD (poster/box art), ficha técnica no padrão Letterboxd e atualização do MOC de Entretenimento no Obsidian."""
+    result = await _culture_service.log_cultural_entry(title=title, media_type=media_type, review_text=review_text, rating=rating)
+    if result.get("success"):
+        return f"Resenha de '{result.get('title')}' salva em '{result.get('path')}' com pôster HD embutido ({result.get('poster_url')})!"
+    return f"Erro ao registrar resenha: {result.get('error')}"
+
 KNOWLEDGE_TOOLS = [
     create_obsidian_note,
     list_obsidian_folders,
@@ -78,4 +88,5 @@ KNOWLEDGE_TOOLS = [
     get_obsidian_note_details,
     get_obsidian_note_content,
     sync_obsidian_knowledge,
+    log_cultural_review,
 ]

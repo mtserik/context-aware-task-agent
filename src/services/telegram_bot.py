@@ -7,7 +7,7 @@ from typing import List, Tuple, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler, CallbackQueryHandler
 from openai import AsyncOpenAI
-from pypdf import PdfReader
+from src.services.document_parser import DocumentParserService
 
 # Configuração de Logs
 logging.basicConfig(
@@ -449,50 +449,48 @@ class TelegramService:
                 os.remove(temp_audio_path)
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Processa documentos (PDF), extrai texto e envia para Maeve indexar/resumir."""
+        """Processa documentos (.pdf, .docx, .txt, etc.), extrai texto e envia para a Maeve."""
         user_id = str(update.effective_user.id)
         if self.allowed_user_id and user_id != self.allowed_user_id:
             return
 
         doc = update.message.document
-        if not doc.mime_type == 'application/pdf':
-            await update.message.reply_text("Por enquanto só consigo ler documentos em PDF.")
-            return
+        filename = doc.file_name or "documento"
+        await update.message.reply_text(f"Recebi seu documento: {filename}. Processando conteúdo... 📖")
 
-        await update.message.reply_text(f"Recebi seu documento: {doc.file_name}. Lendo... 📖")
-
-        temp_pdf_path = None
+        # Determina a extensão do arquivo temporário a partir do nome
+        ext = os.path.splitext(filename)[1] or ".tmp"
+        temp_doc_path = None
         try:
             file = await context.bot.get_file(doc.file_id)
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
-                await file.download_to_drive(custom_path=temp_pdf.name)
-                temp_pdf_path = temp_pdf.name
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as temp_doc:
+                await file.download_to_drive(custom_path=temp_doc.name)
+                temp_doc_path = temp_doc.name
 
-            # Extração de texto
-            reader = PdfReader(temp_pdf_path)
-            full_text = ""
-            for page in reader.pages:
-                full_text += page.extract_text() + "\n"
+            # Extração universal de texto
+            parse_res = DocumentParserService.parse_document(
+                file_path=temp_doc_path,
+                filename=filename,
+                mime_type=doc.mime_type
+            )
 
-            if not full_text.strip():
-                await update.message.reply_text("Não consegui extrair texto deste PDF (pode ser uma imagem).")
+            if not parse_res.get("success"):
+                err_msg = parse_res.get("error", "Não consegui extrair o texto deste documento.")
+                await update.message.reply_text(f"⚠️ {err_msg}")
                 return
 
-            # Envia para a Maeve com um prompt especial de documento
-            prompt = (
-                f"Recebi um documento chamado '{doc.file_name}'. Aqui está o conteúdo extraído:\n\n"
-                f"{full_text[:10000]}\n\n" # Limitando para não estourar contexto
-                "Por favor: 1. Resuma os pontos principais. 2. Salve este resumo como uma nova nota no Obsidian. "
-                "3. Indexe as informações importantes na sua memória vetorial."
-            )
+            if parse_res.get("is_cv"):
+                await update.message.reply_text("Identifiquei seu Currículo / Perfil Profissional! Analisando sua trajetória para calibrar minha memória... 🎯")
+
+            prompt = parse_res["suggested_prompt"]
             await self._process_text(prompt, update, context)
 
         except Exception as e:
-            logging.error(f"Erro ao processar documento: {e}")
-            await update.message.reply_text("Erro ao ler o documento.")
+            logging.error(f"Erro ao processar documento: {e}", exc_info=True)
+            await update.message.reply_text("Erro inesperado ao ler o documento.")
         finally:
-            if temp_pdf_path and os.path.exists(temp_pdf_path):
-                os.remove(temp_pdf_path)
+            if temp_doc_path and os.path.exists(temp_doc_path):
+                os.remove(temp_doc_path)
 
     async def start_bot(self):
         """Inicializa e roda o bot de forma assíncrona."""
