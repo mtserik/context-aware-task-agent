@@ -1,9 +1,11 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-from src.agent.engine import MaeveAgent, db_service
+from src.agent.engine import MaeveAgent
+from src.services.registry import get_database_service
 
 load_dotenv()
+db_service = get_database_service()
 
 async def test_memory():
     import random

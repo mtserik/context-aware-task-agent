@@ -2,8 +2,11 @@ import os
 import httpx
 import json
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger("TickTickService")
 
 class TickTickService:
     """
@@ -71,10 +74,10 @@ class TickTickService:
                 res = await self.call_mcp_tool("get_project_with_undone_tasks", {"project_id": project_id})
                 if isinstance(res, dict) and "tasks" in res:
                     tasks = res.get("tasks", [])
-                    print(f"✅ [TickTick MCP] {len(tasks)} itens recuperados para o projeto {project_id}.")
+                    logger.info(f"[TickTick MCP] {len(tasks)} itens recuperados para o projeto {project_id}.")
                     return tasks
             except Exception as mcp_err:
-                print(f"⚠️ [TickTick] Falha ao listar tarefas via MCP ({mcp_err}). Usando REST fallback...")
+                logger.warning(f"[TickTick] Falha ao listar tarefas via MCP ({mcp_err}). Usando REST fallback...")
 
         if not self.access_token:
             raise Exception("Access Token não configurado.")
