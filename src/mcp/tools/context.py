@@ -27,11 +27,15 @@ def register_context_tools(mcp: FastMCP) -> None:
             "data/hora oficial de Brasília (America/Sao_Paulo), momento circadiano do dia, "
             "tarefas prioritárias de hoje no TickTick, e o Modelo Mental de Perfil/Padrões "
             "do Erik (estilo cognitivo, focos de mestrado/carreira, preferências). "
+            "Se 'topic' for informado, executa pré-carregamento semântico de fragmentos "
+            "relevantes do Segundo Cérebro (Obsidian Vault / Qdrant) com limiar de similaridade cossenoidal. "
             "Ideal para injetar no system prompt do host LLM para ancoragem contextual realista."
         ),
     )
-    async def get_personal_context() -> str:
-        """Agrega contexto temporal, operacional e comportamental do Erik."""
+    async def get_personal_context(
+        topic: Annotated[Optional[str], "Tópico, projeto ou área para pré-carregamento de contexto do Obsidian/Qdrant"] = None
+    ) -> str:
+        """Agrega contexto temporal, operacional e comportamental do Erik com prefetch semântico."""
         try:
             temporal = resolve_temporal_context()
             today_iso = temporal["iso"][:10]
@@ -56,6 +60,25 @@ def register_context_tools(mcp: FastMCP) -> None:
             except Exception as p_err:
                 logger.warning("Aviso ao buscar perfil pessoal: %s", p_err)
 
+            # 3. Pré-carregamento semântico no Qdrant (se topic for fornecido)
+            semantic_block = ""
+            if topic and topic.strip():
+                try:
+                    from src.services.registry import get_vector_db_service
+                    vdb = get_vector_db_service()
+                    results = await vdb.search_context(query=topic.strip(), limit=3, score_threshold=0.68)
+                    if results:
+                        snippets = []
+                        for r in results:
+                            content = r.get("content", "").strip()[:500]
+                            path = r.get("metadata", {}).get("path", "?")
+                            score = r.get("score")
+                            score_str = f" (Score: {score:.2f})" if score is not None else ""
+                            snippets.append(f"- **{path}**{score_str}:\n  {content}")
+                        semantic_block = f"\n\n## 🧠 Memória Semântica do Obsidian ({topic.strip()})\n" + "\n\n".join(snippets)
+                except Exception as s_err:
+                    logger.warning("Aviso ao buscar contexto semântico: %s", s_err)
+
             context = f"""# Contexto Pessoal & Operacional do Erik
 
 ## Dados Temporais
@@ -66,7 +89,7 @@ def register_context_tools(mcp: FastMCP) -> None:
 ## Backlog Operacional (TickTick — Hoje + Atrasadas)
 {tasks_block}
 
-{profile_block}
+{profile_block}{semantic_block}
 """
             return context.strip()
         except Exception as e:

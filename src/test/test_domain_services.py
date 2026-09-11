@@ -365,12 +365,104 @@ def test_telegram_semantic_chunking_and_boundary_healing():
     print("[OK] test_telegram_semantic_chunking_and_boundary_healing PASSOU")
 
 
+def test_knowledge_domain_write_through_qdrant():
+    """Valida se o KnowledgeDomainService executa o Write-Through imediato no Qdrant ao criar nota."""
+    mock_obsidian = MagicMock()
+    mock_obsidian.write_note_with_frontmatter = AsyncMock(return_value="02 - Projects/Maeve.md")
+    mock_vdb = MagicMock()
+    mock_vdb.upsert_documents = AsyncMock()
+
+    svc = KnowledgeDomainService(obsidian_service=mock_obsidian, vector_db_service=mock_vdb)
+    result = asyncio.run(svc.create_note(
+        title="Maeve",
+        content="# Arquitetura",
+        folder="02 - Projects",
+        frontmatter={"author": "maeve", "category": "projeto"}
+    ))
+
+    assert result.success is True
+    assert result.path == "02 - Projects/Maeve.md"
+    mock_obsidian.write_note_with_frontmatter.assert_called_once()
+    mock_vdb.upsert_documents.assert_called_once()
+    print("[OK] test_knowledge_domain_write_through_qdrant PASSOU")
+
+
+def test_knowledge_domain_append_to_daily_note():
+    """Valida se o padrão Append-First anexa à Daily Note com tags e reindexa no Qdrant."""
+    mock_obsidian = MagicMock()
+    mock_obsidian.append_note = AsyncMock(return_value="01 - Daily/2026-09-10.md")
+    mock_obsidian.get_note_content = AsyncMock(return_value="Conteúdo atualizado do dia")
+    mock_obsidian.vault_path = "/vault"
+    mock_vdb = MagicMock()
+    mock_vdb.upsert_documents = AsyncMock()
+
+    svc = KnowledgeDomainService(obsidian_service=mock_obsidian, vector_db_service=mock_vdb)
+    result = asyncio.run(svc.append_to_daily_note(
+        content="Discutimos arquitetura de persistência de contexto.",
+        title="Alinhamento MCP",
+        category="projeto",
+        tags=["maeve", "arquitetura"],
+        date_str="2026-09-10"
+    ))
+
+    assert result.success is True
+    assert "01 - Daily/2026-09-10.md" in result.path
+    mock_obsidian.append_note.assert_called_once()
+    mock_vdb.upsert_documents.assert_called_once()
+    print("[OK] test_knowledge_domain_append_to_daily_note PASSOU")
+
+
+def test_knowledge_domain_delete_and_move_qdrant_sync():
+    """Valida se remoção e movimentação de notas propagam para o Qdrant."""
+    mock_obsidian = MagicMock()
+    mock_obsidian.delete_item = AsyncMock(return_value=True)
+    mock_obsidian.move_item = AsyncMock(return_value=True)
+    mock_obsidian.get_note_content = AsyncMock(return_value="# Conteudo")
+    mock_obsidian.get_note_metadata = AsyncMock(return_value={"title": "Nota", "folder": "Projects"})
+    mock_obsidian.vault_path = "/vault"
+    mock_vdb = MagicMock()
+    mock_vdb.delete_by_path = AsyncMock(return_value=True)
+    mock_vdb.upsert_documents = AsyncMock()
+
+    svc = KnowledgeDomainService(obsidian_service=mock_obsidian, vector_db_service=mock_vdb)
+
+    del_res = asyncio.run(svc.delete_item("Inbox/Lixo.md"))
+    assert del_res.success is True
+    mock_vdb.delete_by_path.assert_called_with("Inbox/Lixo.md")
+
+    move_res = asyncio.run(svc.move_item("Inbox/Nota.md", "Projects/Nota.md"))
+    assert move_res.success is True
+    mock_vdb.delete_by_path.assert_called_with("Inbox/Nota.md")
+    mock_vdb.upsert_documents.assert_called_once()
+    print("[OK] test_knowledge_domain_delete_and_move_qdrant_sync PASSOU")
+
+
+def test_knowledge_domain_search_semantic():
+    """Valida a busca semântica com threshold e formatação dos scores."""
+    mock_vdb = MagicMock()
+    mock_vdb.search_context = AsyncMock(return_value=[
+        {"content": "Trecho sobre MCP", "score": 0.85, "metadata": {"title": "Doc MCP", "path": "Projects/MCP.md"}}
+    ])
+    svc = KnowledgeDomainService(vector_db_service=mock_vdb)
+    res = asyncio.run(svc.search_semantic("MCP context", limit=3, score_threshold=0.70))
+
+    assert res.success is True
+    assert "Score: 0.850" in res.message
+    assert "Doc MCP" in res.message
+    mock_vdb.search_context.assert_called_once_with("MCP context", limit=3, score_threshold=0.70)
+    print("[OK] test_knowledge_domain_search_semantic PASSOU")
+
+
 if __name__ == "__main__":
     test_dynamic_tool_binding_subsets()
     test_task_domain_parent_project_inheritance()
     test_task_domain_time_blocking_normalization()
     test_knowledge_domain_note_creation()
     test_knowledge_domain_batch_move_notes()
+    test_knowledge_domain_write_through_qdrant()
+    test_knowledge_domain_append_to_daily_note()
+    test_knowledge_domain_delete_and_move_qdrant_sync()
+    test_knowledge_domain_search_semantic()
     test_fastapi_endpoints_health()
     test_multi_provider_model_factory()
     test_temporal_context_and_timezone_handling()

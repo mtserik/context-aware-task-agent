@@ -6,7 +6,7 @@ Toda logica de embedding e matematica vetorial (text-embedding-3-small via
 VectorDBService.search_context) e restrita a geracao de vetores de busca.
 """
 import logging
-from typing import Annotated
+from typing import Annotated, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -33,15 +33,16 @@ def register_memory_tools(mcp: FastMCP) -> None:
     async def memory_search(
         query: Annotated[str, "Query em linguagem natural para busca semantica no Obsidian Vault"],
         limit: Annotated[int, "Numero maximo de resultados (default: 5, max: 20)"] = 5,
+        score_threshold: Annotated[Optional[float], "Limiar mínimo de similaridade cossenoidal (ex: 0.70). Se omitido, retorna os mais próximos."] = None,
     ) -> str:
-        """Busca semantica vetorial no Obsidian Vault. Retorna chunks Markdown brutos."""
+        """Busca semantica vetorial no Obsidian Vault. Retorna chunks Markdown brutos com score."""
         try:
             limit = max(1, min(limit, 20))
             vector_db = get_vector_db_service()
-            results = await vector_db.search_context(query=query, limit=limit)
+            results = await vector_db.search_context(query=query, limit=limit, score_threshold=score_threshold)
 
             if not results:
-                return "Nenhum resultado encontrado para a query fornecida."
+                return "Nenhum resultado relevante encontrado para a query fornecida."
 
             lines = []
             for i, r in enumerate(results, 1):
@@ -49,7 +50,9 @@ def register_memory_tools(mcp: FastMCP) -> None:
                 metadata = r.get("metadata", {})
                 path = metadata.get("path", "desconhecido")
                 title = metadata.get("title", path)
-                lines.append(f"## [{i}] {title}\nCaminho: {path}\n\n{content}")
+                score = r.get("score")
+                score_str = f" [Score: {score:.3f}]" if score is not None else ""
+                lines.append(f"## [{i}] {title}{score_str}\nCaminho: {path}\n\n{content}")
 
             return "\n\n---\n\n".join(lines)
         except Exception as e:
@@ -59,26 +62,77 @@ def register_memory_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="memory_store",
         description=(
-            "Cria ou atualiza uma nota no Obsidian Vault com versionamento Git automatico. "
-            "Use para registrar insights, decisoes, aprendizados ou documentacao gerada "
-            "durante sessoes de trabalho no Antigravity. "
-            "O conteudo deve ser em Markdown estruturado com notacao matematica em LaTeX "
-            "(MathJax: $inline$ e $$bloco$$) quando aplicavel."
+            "Cria ou atualiza uma nota no Obsidian Vault com versionamento Git e Write-Through imediato no Qdrant. "
+            "Use para registrar insights, projetos densos, decisões ou documentação gerada "
+            "durante sessões de trabalho no Antigravity. "
+            "O conteúdo deve ser em Markdown estruturado com notação matemática em LaTeX "
+            "(MathJax: $inline$ e $$bloco$$) quando aplicável."
         ),
     )
     async def memory_store(
         title: Annotated[str, "Titulo da nota (sera usado como nome do arquivo .md)"],
         content: Annotated[str, "Conteudo da nota em Markdown estruturado com LaTeX para matematica"],
-        folder: Annotated[str, "Pasta destino no Vault (ex: 'Inbox', 'Projetos', 'Decisoes')"] = "Inbox",
+        folder: Annotated[str, "Pasta destino no Vault (ex: '00 - Inbox/Maeve', '02 - Projects', '03 - Decisions')"] = "00 - Inbox/Maeve",
+        category: Annotated[Optional[str], "Categoria da nota ('projeto', 'decisao', 'reuniao', 'conceito', 'brainstorming')"] = "projeto",
+        tags: Annotated[Optional[str], "Tags separadas por virgula (ex: 'maeve, arquitetura, mcp')"] = None,
     ) -> str:
-        """Cria uma nota no Obsidian Vault com commit Git automatico."""
+        """Cria uma nota no Obsidian Vault com commit Git e Write-Through imediato no Qdrant."""
         try:
+            from src.domain.temporal import get_local_now
+            frontmatter = {
+                "author": "maeve",
+                "created_at": get_local_now().isoformat(),
+            }
+            if category:
+                frontmatter["category"] = category
+            if tags:
+                tag_list = [t.strip().lstrip("#") for t in tags.split(",") if t.strip()]
+                if tag_list:
+                    frontmatter["tags"] = tag_list
+
             svc = KnowledgeDomainService()
-            result = await svc.create_note(title=title, content=content, folder=folder)
+            result = await svc.create_note(
+                title=title,
+                content=content,
+                folder=folder,
+                frontmatter=frontmatter,
+                sync_vector_db=True
+            )
             return result.message
         except Exception as e:
             logger.error("Erro em memory_store: %s", e)
             return f"Erro ao salvar nota no Vault: {str(e)}"
+
+    @mcp.tool(
+        name="append_session_note",
+        description=(
+            "Anexa uma síntese estruturada de reunião, conversa, projeto ou brainstorming "
+            "na Daily Note do dia (ex: '01 - Daily/YYYY-MM-DD.md') com timestamp e tags. "
+            "Garante o princípio anti-bagunça da Maeve (Append-First), evitando fragmentação "
+            "do Vault em dezenas de micro-arquivos avulsos. "
+            "Executa Write-Through imediato no Qdrant para refletir o conteúdo atualizado na memória vetorial."
+        ),
+    )
+    async def append_session_note(
+        title: Annotated[str, "Título ou tópico da sessão/reunião/brainstorming"],
+        summary: Annotated[str, "Síntese em Markdown estruturado dos pontos discutidos, decisões e próximos passos (LaTeX para matemática quando aplicável)"],
+        category: Annotated[str, "Categoria: 'reuniao', 'projeto', 'brainstorming', 'ideia', 'alinhamento'"] = "projeto",
+        tags: Annotated[str, "Tags separadas por vírgula (ex: 'maeve, arquitetura, mcp')"] = "",
+    ) -> str:
+        """Anexa sessão na Daily Note do dia com commit Git e Write-Through no Qdrant."""
+        try:
+            svc = KnowledgeDomainService()
+            tag_list = [t.strip().lstrip("#") for t in tags.split(",") if t.strip()] if tags else []
+            result = await svc.append_to_daily_note(
+                content=summary,
+                title=title,
+                category=category,
+                tags=tag_list
+            )
+            return result.message
+        except Exception as e:
+            logger.error("Erro em append_session_note: %s", e)
+            return f"Erro ao registrar sessão no Vault: {str(e)}"
 
     @mcp.tool(
         name="search_knowledge",

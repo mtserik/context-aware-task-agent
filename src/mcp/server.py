@@ -82,7 +82,7 @@ def create_mcp_server() -> FastMCP:
 
     logger.info(
         "Maeve FastMCP Server inicializado com %d tools, resources e prompts.",
-        14,  # memory_search, memory_store, search_knowledge, sync_knowledge,
+        15,  # memory_search, memory_store, append_session_note, search_knowledge, sync_knowledge,
              # list_today_tasks, create_task, get_personal_context, set_reminder,
              # log_decision, batch_move_obsidian_notes, log_cultural_review,
              # log_daily_journal, log_user_insight, create_focus_block

@@ -565,10 +565,10 @@ class MaeveAgent:
         user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
         user_query = user_msg.content if user_msg else ""
 
-        # Contexto do Obsidian (se relevante para o planejamento conceitual)
+        # Contexto do Obsidian (se relevante para o planejamento conceitual) com corte de score cossenoidal
         current_intent = state.get("current_intent") or "general"
-        should_search_rag = bool(user_query) and current_intent in ["knowledge", "general"]
-        context_docs = await self._vector_db.search_context(user_query, limit=3) if should_search_rag else []
+        should_search_rag = bool(user_query) and current_intent in ["knowledge", "general", "chat"]
+        context_docs = await self._vector_db.search_context(user_query, limit=3, score_threshold=0.68) if should_search_rag else []
         context_str = "\n".join([
             f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:800]}" for doc in context_docs
         ])
@@ -662,15 +662,17 @@ class MaeveAgent:
         chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
         last_query = user_msg.content if user_msg else ""
 
-        # 4. Busca Seletiva no RAG (Qdrant)
-        # Bypassa RAG se for conversa trivial ou se domínio for estritamente tasks/reminders sem busca
-        should_search_rag = bool(last_query) and current_intent in ["knowledge", "general"]
-        if should_search_rag and routing.get("complexity", 1) == 1:
+        # 4. Busca Seletiva e Proativa no RAG (Qdrant) com corte cossenoidal
+        # Permite busca semântica proativa em knowledge, general, chat ou queries com densidade
+        should_search_rag = bool(last_query) and (
+            current_intent in ["knowledge", "general", "chat"] or len(str(last_query).split()) >= 3
+        )
+        if should_search_rag:
             clean_q = str(last_query).strip().lower()
-            if len(clean_q) < 4:
+            if len(clean_q) < 5 or clean_q in ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "valeu", "ok"]:
                 should_search_rag = False
 
-        context_docs = await self._vector_db.search_context(last_query, limit=3) if should_search_rag else []
+        context_docs = await self._vector_db.search_context(last_query, limit=3, score_threshold=0.68) if should_search_rag else []
         context_str = "\n".join([
             f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs
         ])

@@ -94,8 +94,18 @@ async def log_user_insight(category: str, insight: str, source: str = "chat"):
     res = await profile_svc.add_insight(category=category, insight=insight, source=source)
     return f"Insight de perfil registrado em '{res.get('category')}': {res.get('insight')}"
 
+@tool
+async def append_obsidian_session_note(title: str, summary: str, category: str = "projeto", tags: str = ""):
+    """Anexa uma síntese estruturada de reunião, conversa, projeto ou brainstorming na Daily Note do dia (ex: '01 - Daily/YYYY-MM-DD.md').
+    Garante o padrão Append-First da Maeve, mantendo o Vault organizado sem fragmentar em micro-arquivos avulsos.
+    Executa Write-Through imediato no Qdrant para refletir o conteúdo atualizado."""
+    tag_list = [t.strip().lstrip("#") for t in tags.split(",") if t.strip()] if tags else []
+    result = await _knowledge_domain.append_to_daily_note(content=summary, title=title, category=category, tags=tag_list)
+    return result.to_agent_message()
+
 KNOWLEDGE_TOOLS = [
     create_obsidian_note,
+    append_obsidian_session_note,
     list_obsidian_folders,
     delete_obsidian_item,
     move_obsidian_item,

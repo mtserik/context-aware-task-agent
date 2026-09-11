@@ -420,6 +420,35 @@ class ObsidianService:
         full_content = yaml_block + content
         return await self.write_note(relative_path, full_content, commit_message)
 
+    async def append_note(
+        self,
+        relative_path: str,
+        content_to_append: str,
+        heading: Optional[str] = None,
+        commit_message: Optional[str] = None
+    ) -> str:
+        """
+        Anexa conteúdo a uma nota existente (ou cria caso não exista).
+        Se 'heading' for fornecido, anexa sob o cabeçalho (ex: '## ⚡ Sessões & Insights Maeve').
+        """
+        full_path = self._safe_resolve(relative_path)
+        existing_content = ""
+        if os.path.exists(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                existing_content = f.read()
+
+        text_to_add = content_to_append.strip()
+        if heading:
+            if heading not in existing_content:
+                addition = f"\n\n{heading}\n\n{text_to_add}\n"
+            else:
+                addition = f"\n\n{text_to_add}\n"
+        else:
+            addition = f"\n\n{text_to_add}\n" if existing_content else text_to_add
+
+        updated_content = (existing_content + addition).strip() + "\n" if existing_content else text_to_add + "\n"
+        return await self.write_note(relative_path, updated_content, commit_message=commit_message)
+
     async def list_folders(self) -> List[str]:
         """
         Lista as pastas existentes no vault (ignorando pastas ocultas como .git).

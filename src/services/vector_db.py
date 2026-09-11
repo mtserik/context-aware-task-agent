@@ -1,7 +1,8 @@
 import os
 import uuid
+from typing import Optional, List, Dict, Any
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from langchain_openai import OpenAIEmbeddings
 
 class VectorDBService:
@@ -65,26 +66,31 @@ class VectorDBService:
             points=points
         )
 
-    async def search_context(self, query: str, limit: int = 5):
+    async def search_context(self, query: str, limit: int = 5, score_threshold: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         Realiza uma busca semântica para encontrar contextos relevantes.
-        Retorna uma lista de dicionários com conteúdo e metadados.
+        Retorna uma lista de dicionários com conteúdo, score de similaridade e metadados.
         Em caso de erro (ex: Qdrant offline), retorna lista vazia com segurança.
         """
         try:
             client = await self._get_client()
             query_vector = await self.embeddings.aembed_query(query)
 
-            response = await client.query_points(
-                collection_name=self.collection_name,
-                query=query_vector,
-                limit=limit,
-                with_payload=True
-            )
+            query_kwargs: Dict[str, Any] = {
+                "collection_name": self.collection_name,
+                "query": query_vector,
+                "limit": limit,
+                "with_payload": True,
+            }
+            if score_threshold is not None:
+                query_kwargs["score_threshold"] = score_threshold
+
+            response = await client.query_points(**query_kwargs)
 
             return [
                 {
                     "content": point.payload.get("content", ""),
+                    "score": getattr(point, "score", None),
                     "metadata": {k: v for k, v in point.payload.items() if k != "content"}
                 }
                 for point in response.points
@@ -92,6 +98,31 @@ class VectorDBService:
         except Exception as e:
             print(f"⚠️ [VectorDB] Falha ao consultar contexto: {e}")
             return []
+
+    async def delete_by_path(self, path: str) -> bool:
+        """Remove documentos/pontos associados a um caminho de arquivo no Qdrant."""
+        try:
+            client = await self._get_client()
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, path))
+            # 1. Tenta remoção por ID determinístico
+            try:
+                await client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=[point_id]
+                )
+            except Exception:
+                pass
+            # 2. Garante remoção por filtro de metadado (caso tenha havido chunks com mesmo path)
+            await client.delete(
+                collection_name=self.collection_name,
+                points_selector=Filter(
+                    must=[FieldCondition(key="path", match=MatchValue(value=path))]
+                )
+            )
+            return True
+        except Exception as e:
+            print(f"⚠️ [VectorDB] Falha ao deletar documento por path '{path}': {e}")
+            return False
 
     async def close(self):
         """Fecha a conexão do cliente Qdrant de forma segura."""

@@ -32,13 +32,45 @@ class KnowledgeDomainService:
             self._vector_db = get_vector_db_service()
         return self._vector_db
 
-    async def create_note(self, title: str, content: str, folder: str = "Inbox") -> KnowledgeResult:
-        """Cria uma nova nota no Vault do Obsidian com versionamento Git."""
+    async def create_note(
+        self,
+        title: str,
+        content: str,
+        folder: str = "Inbox",
+        frontmatter: Optional[Dict[str, Any]] = None,
+        sync_vector_db: bool = True,
+    ) -> KnowledgeResult:
+        """
+        Cria uma nova nota no Vault do Obsidian com versionamento Git e Write-Through imediato no Qdrant.
+        """
         try:
             filename = f"{title}.md" if not title.endswith(".md") else title
             relative_path = os.path.join(folder, filename).replace("\\", "/")
             commit_msg = f"Maeve: Criou nota '{title}' em {folder}"
-            await self.obsidian.write_note(relative_path, content, commit_message=commit_msg)
+
+            if frontmatter:
+                await self.obsidian.write_note_with_frontmatter(
+                    relative_path, content, frontmatter, commit_message=commit_msg
+                )
+            else:
+                await self.obsidian.write_note(relative_path, content, commit_message=commit_msg)
+
+            # Write-Through imediato no Qdrant
+            if sync_vector_db:
+                try:
+                    meta = {
+                        "source": "obsidian",
+                        "path": relative_path,
+                        "title": title,
+                        "folder": folder
+                    }
+                    if frontmatter:
+                        meta.update({k: v for k, v in frontmatter.items() if isinstance(v, (str, int, float, bool, list))})
+                    text_to_index = f"Título: {title}\nConteúdo: {content}"
+                    await self.vector_db.upsert_documents(texts=[text_to_index], metadatas=[meta])
+                except Exception as vec_err:
+                    print(f"⚠️ [KnowledgeDomain] Nota salva mas falha ao indexar no Qdrant: {vec_err}")
+
             return KnowledgeResult(
                 success=True,
                 message=f"Nota '{title}' criada com sucesso na pasta '{folder}'.",
@@ -46,6 +78,74 @@ class KnowledgeDomainService:
             )
         except Exception as e:
             return KnowledgeResult(success=False, message=f"Erro ao criar nota: {str(e)}")
+
+    async def append_to_daily_note(
+        self,
+        content: str,
+        title: Optional[str] = None,
+        category: str = "projeto",
+        tags: Optional[List[str]] = None,
+        date_str: Optional[str] = None,
+    ) -> KnowledgeResult:
+        """
+        Anexa uma síntese estruturada de reunião, conversa, projeto ou brainstorming na Daily Note
+        do dia (ex: '01 - Daily/YYYY-MM-DD.md').
+        Garante o padrão anti-bagunça (Append-First), evitando fragmentação em micro-arquivos avulsos.
+        Executa Write-Through no Qdrant para refletir o conteúdo atualizado em tempo real.
+        """
+        try:
+            from src.domain.temporal import get_local_now
+            now_sp = get_local_now()
+            today_date = date_str or now_sp.strftime("%Y-%m-%d")
+            time_str = now_sp.strftime("%H:%M")
+
+            relative_path = f"01 - Daily/{today_date}.md"
+            session_title = title or "Sessão & Insights"
+
+            tag_list = list(tags) if tags else []
+            if category and category not in tag_list:
+                tag_list.append(category)
+            formatted_tags = " ".join([f"#{t.strip().lstrip('#')}" for t in tag_list if t.strip()])
+
+            block = f"### [{time_str}] ⚡ {session_title}\n"
+            if formatted_tags:
+                block += f"- **Tags:** {formatted_tags}\n"
+            block += f"\n{content.strip()}\n"
+
+            commit_msg = f"Maeve: Registro de sessão diária ({today_date})"
+            await self.obsidian.append_note(
+                relative_path=relative_path,
+                content_to_append=block,
+                heading="## ⚡ Sessões & Insights Maeve",
+                commit_message=commit_msg,
+            )
+
+            # Write-Through re-index no Qdrant
+            try:
+                full_path = os.path.join(self.obsidian.vault_path, relative_path)
+                updated_text = await self.obsidian.get_note_content(full_path)
+                if updated_text:
+                    meta = {
+                        "source": "obsidian",
+                        "path": relative_path,
+                        "title": f"Daily Note {today_date}",
+                        "folder": "01 - Daily",
+                        "date": today_date
+                    }
+                    await self.vector_db.upsert_documents(
+                        texts=[f"Título: Daily Note {today_date}\nConteúdo: {updated_text}"],
+                        metadatas=[meta]
+                    )
+            except Exception as vec_err:
+                print(f"⚠️ [KnowledgeDomain] Falha ao reindexar Daily Note no Qdrant: {vec_err}")
+
+            return KnowledgeResult(
+                success=True,
+                message=f"Sessão '{session_title}' anexada com sucesso em '{relative_path}'.",
+                path=relative_path
+            )
+        except Exception as e:
+            return KnowledgeResult(success=False, message=f"Erro ao anexar à Daily Note: {str(e)}")
 
     async def list_folders(self) -> KnowledgeResult:
         """Lista pastas principais no Vault."""
@@ -57,29 +157,82 @@ class KnowledgeDomainService:
             return KnowledgeResult(success=False, message=f"Erro ao listar pastas: {str(e)}")
 
     async def delete_item(self, relative_path: str) -> KnowledgeResult:
-        """Remove um arquivo ou pasta do Vault."""
+        """Remove um arquivo ou pasta do Vault e expurga os pontos no Qdrant."""
         try:
             success = await self.obsidian.delete_item(
                 relative_path,
                 commit_message=f"Maeve: Removeu '{relative_path}'"
             )
+            if success:
+                try:
+                    await self.vector_db.delete_by_path(relative_path)
+                except Exception as vec_err:
+                    print(f"⚠️ [KnowledgeDomain] Falha ao remover '{relative_path}' do Qdrant: {vec_err}")
             msg = f"Item '{relative_path}' removido." if success else f"Erro: Caminho '{relative_path}' não encontrado."
             return KnowledgeResult(success=success, message=msg, path=relative_path)
         except Exception as e:
             return KnowledgeResult(success=False, message=f"Erro ao deletar item: {str(e)}")
 
     async def move_item(self, old_path: str, new_path: str) -> KnowledgeResult:
-        """Move ou renomeia um arquivo ou pasta no Vault."""
+        """Move ou renomeia um arquivo ou pasta no Vault e atualiza o índice no Qdrant."""
         try:
             success = await self.obsidian.move_item(
                 old_path,
                 new_path,
                 commit_message=f"Maeve: Moveu '{old_path}' para '{new_path}'"
             )
+            if success:
+                try:
+                    await self.vector_db.delete_by_path(old_path)
+                    full_path = os.path.join(self.obsidian.vault_path, new_path)
+                    content = await self.obsidian.get_note_content(full_path)
+                    if content:
+                        meta = await self.obsidian.get_note_metadata(new_path)
+                        await self.vector_db.upsert_documents(
+                            texts=[f"Título: {meta['title']}\nConteúdo: {content}"],
+                            metadatas=[{
+                                "source": "obsidian",
+                                "path": new_path,
+                                "title": meta['title'],
+                                "folder": meta.get('folder', '')
+                            }]
+                        )
+                except Exception as vec_err:
+                    print(f"⚠️ [KnowledgeDomain] Falha ao atualizar Qdrant após mover item: {vec_err}")
             msg = f"Item movido para '{new_path}'." if success else f"Erro ao mover '{old_path}'."
             return KnowledgeResult(success=success, message=msg, path=new_path)
         except Exception as e:
             return KnowledgeResult(success=False, message=f"Erro ao mover: {str(e)}")
+
+    async def search_semantic(
+        self,
+        query: str,
+        limit: int = 5,
+        score_threshold: Optional[float] = None
+    ) -> KnowledgeResult:
+        """Busca semântica vetorial com score cossenoidal e limiar de similaridade."""
+        try:
+            results = await self.vector_db.search_context(query, limit=limit, score_threshold=score_threshold)
+            if not results:
+                return KnowledgeResult(success=True, message="Nenhum resultado relevante encontrado.", data=[])
+
+            lines = []
+            for i, r in enumerate(results, 1):
+                content = r.get("content", "").strip()
+                meta = r.get("metadata", {})
+                score = r.get("score")
+                score_str = f" [Score: {score:.3f}]" if score is not None else ""
+                title = meta.get("title", meta.get("path", "Nota"))
+                path = meta.get("path", "desconhecido")
+                lines.append(f"## [{i}] {title}{score_str}\nCaminho: {path}\n\n{content}")
+
+            return KnowledgeResult(
+                success=True,
+                message="\n\n---\n\n".join(lines),
+                data=results
+            )
+        except Exception as e:
+            return KnowledgeResult(success=False, message=f"Erro na busca semântica: {str(e)}", data=[])
 
     async def batch_move_notes(self, moves: List[Dict[str, str]]) -> KnowledgeResult:
         """
