@@ -229,8 +229,8 @@ def get_system_prompt_parts(tier: str = "smart", **kwargs) -> tuple[str, str]:
     O bloco estático é cacheado via ephemeral cache_control (90% desconto de tokens).
     
     Args:
-        tier: 'fast' para modelos operacionais rápidos (Luna) ou 'smart' para raciocínio (Sonnet).
-        **kwargs: Variáveis de contexto para interpolação dinâmica (date, time, obsidian_context, etc.)
+        tier: 'fast' para modelos operacionais rápidos (Luna) ou 'smart' para raciocínio (Sonnet/Terra).
+        **kwargs: Variáveis de contexto para interpolação dinâmica (date, time, obsidian_context, session_context, etc.)
     """
     if str(tier).lower() == "fast":
         static = FAST_PROMPT_STATIC
@@ -246,6 +246,9 @@ def get_system_prompt_parts(tier: str = "smart", **kwargs) -> tuple[str, str]:
         **kwargs
     }
     dynamic = dynamic_template.format(**safe_kwargs) if safe_kwargs else dynamic_template
+    session_ctx = kwargs.get("session_context")
+    if session_ctx and str(session_ctx).strip():
+        dynamic += f"\n\n{str(session_ctx).strip()}"
     return static, dynamic
 
 
@@ -259,22 +262,24 @@ def get_system_prompt(tier: str = "smart", **kwargs) -> str:
 
 
 # =====================================================================
-# STRATEGIC PLANNER PROMPT (Claude Sonnet 5 — Staff Brain)
+# STRATEGIC PLANNER PROMPT (Claude Sonnet / GPT-5.6 Terra — Brain)
 # =====================================================================
 PLANNER_PROMPT_STATIC = """# ROLE & IDENTIDADE
-Você é a Maeve operando exclusivamente como o Cérebro Estratégico (Staff Software Engineer & Staff Data Scientist) do Erik.
+Você é a Maeve operando exclusivamente como o Cérebro Estratégico & Operacional do Erik.
 Sua missão única neste nó é PENSAR, RACIOCINAR, PLANEJAR E ESTRUTURAR a solução ótima para o pedido do Erik.
 Você NÃO executa ferramentas nem se comunica diretamente com o Telegram neste passo.
 Toda a execução física (TickTick MCP, Obsidian Vault, Web, Lembretes) e a entrega final amigável ao usuário serão feitas pela Luna (modelo executor operacional).
 
-# DIRETRIZES DE PLANEJAMENTO ESTRATÉGICO
-1. **Quebra Estruturada em Ações Concretas:**
-   - Se o pedido envolver criar projetos ou tarefas no TickTick: determine o nome do Projeto, defina os Épicos e quebre em Histórias/Tarefas granulares com títulos claros, prioridades (0=None, 1=Low, 3=Medium, 5=High) e estimativas.
+# DIRETRIZES DE PLANEJAMENTO ESTRATÉGICO & OPERACIONAL
+1. **Interpretação e Quebra de Tarefas (TickTick MCP):**
+   - Se o pedido envolver concluir, adiar ou deletar tarefas: identifique a tarefa alvo no Backlog da Sessão. Se o Erik citou apenas um nome aproximado (ex: 'iFood', 'cálculo'), aponte o ID exato ou o termo chave para a ferramenta correspondente (`complete_ticktick_task`, `reschedule_ticktick_task`, etc.).
+   - Se envolver criar projetos ou tarefas no TickTick: determine o nome do Projeto, defina os Épicos e quebre em Histórias/Tarefas granulares com títulos claros, prioridades (0=None, 1=Low, 3=Medium, 5=High) e estimativas.
    - Calcule datas e horários pontuais ou intervalos de time-blocking baseados na Data e Hora Atual do Erik (horário de Brasília).
-   - Indique as datas em padrão UTC para que o executor operacional (Luna) envie ao TickTick MCP com exatidão.
+   - Se for bloco de foco: recomende o uso de `create_focus_block`.
+2. **Segundo Cérebro (Obsidian Vault):**
    - Se envolver Obsidian: defina títulos, pastas de destino, estrutura Markdown (`#`, `##`, listas) e fórmulas em LaTeX MathJax (`$inline$` e `$$bloco$$`).
-   - Se for análise arquitetural ou matemática: elabore a dedução rigorosa e os trade-offs fundamentados em primeiros princípios.
-2. **Formato Direto para o Executor (Luna):**
+   - Se for análise arquitetural, de dados ou matemática: elabore a dedução rigorosa e os trade-offs fundamentados em primeiros princípios.
+3. **Formato Direto para o Executor (Luna):**
    Gere um plano claro, coeso e sem ambiguidades para que a Luna consiga mapear diretamente para as ferramentas disponíveis ou entregar a síntese com excelência."""
 
 PLANNER_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (SÃO PAULO vs BACKEND UTC)
@@ -289,7 +294,7 @@ PLANNER_PROMPT_DYNAMIC = """# CONTEXTO TEMPORAL & SITUACIONAL (SÃO PAULO vs BAC
 
 def get_planner_prompt_parts(**kwargs) -> tuple[str, str]:
     """
-    Retorna o prompt do Planner particionado em (estático, dinâmico) para suportar Anthropic Prompt Caching.
+    Retorna o prompt do Planner particionado em (estático, dinâmico) para suportar Prompt Caching.
     """
     safe_kwargs = {
         "iso_utc": kwargs.get("iso_utc", "UTC"),
@@ -298,5 +303,9 @@ def get_planner_prompt_parts(**kwargs) -> tuple[str, str]:
         **kwargs
     }
     dynamic = PLANNER_PROMPT_DYNAMIC.format(**safe_kwargs) if safe_kwargs else PLANNER_PROMPT_DYNAMIC
+    session_ctx = kwargs.get("session_context")
+    if session_ctx and str(session_ctx).strip():
+        dynamic += f"\n\n{str(session_ctx).strip()}"
     return PLANNER_PROMPT_STATIC, dynamic
+
 

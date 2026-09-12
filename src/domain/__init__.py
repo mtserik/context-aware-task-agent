@@ -9,6 +9,7 @@ from src.domain.temporal import (
     to_local_datetime,
     resolve_temporal_context,
 )
+from src.domain.session import SessionDomainService
 
 __all__ = [
     "DomainResult",
@@ -16,6 +17,7 @@ __all__ = [
     "KnowledgeResult",
     "ReminderResult",
     "TaskDomainService",
+    "SessionDomainService",
     "KnowledgeDomainService",
     "ReminderDomainService",
     "SearchDomainService",

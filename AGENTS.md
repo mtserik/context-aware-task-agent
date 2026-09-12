@@ -873,4 +873,51 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
      - Comando `cria uma nota...` após contexto de tarefas do TickTick (assegura `knowledge`).
      - Comando `cria uma nota no Obsidian...` com histórico de tarefas prévio (assegura `knowledge`).
      - Confirmação rápida de proposta de salvamento no Obsidian Vault (assegura `knowledge`).
-     - Confirmação rápida de proposta de agendamento de tarefa no TickTick (assegura `tasks`).
+     - Confirmação rápida de proposta de agendamento de tarefa no TickTick (assegura `tasks`).
+
+---
+
+### 9.10 Sprint 19: TickTick 100% MCP, Smart Task Resolution, Detecção de Sessão & Hierarquia Cognitiva Tri-Tier (2026-09-12)
+
+> **Objetivo:** Resolver definitivamente as falhas recorrentes de ações no TickTick via Telegram, alinhar a confiabilidade do Telegram ao padrão do Antigravity, eliminar dependências de tokens transitórios OAuth2 migrando para o servidor oficial TickTick MCP 100% via JSON-RPC 2.0, e introduzir a Hierarquia Cognitiva Tri-Tier (Sonnet Brain + Terra Brain + Luna Executor) para otimização de custo e performance.
+
+#### 1. TickTick 100% MCP (Descontinuação do Legado REST)
+- **Problema:** O cliente TickTick alternava entre chamadas REST legadas (com tokens OAuth2 expirados na nuvem) e chamadas MCP. Ferramentas essenciais como `complete_task` não existiam no LangGraph como ações atômicas, forçando a Maeve a tentar `batch_update_ticktick_tasks` com payload malformado (`task_id` em vez de `id`).
+- **Solução Técnica:**
+  - `src/services/ticktick.py` refatorado para conectar exclusivamente ao endpoint oficial MCP (`https://mcp.ticktick.com`) via JSON-RPC 2.0 com `TICKTICK_MCP_TOKEN` permanente (`tp_...`).
+  - Métodos nativos MCP: `get_tasks` (usando `list_undone_tasks_by_date` e `get_project_with_undone_tasks`), `complete_task`, `delete_task`, `update_task`, `create_task`, `batch_add_tasks`, `batch_update_tasks`, `list_projects`, `list_project_groups`, `create_project`.
+  - Correção no unwrap de responses MCP para preservar listas de múltiplos itens e payloads estruturados.
+
+#### 2. Smart Task Resolution (`src/domain/tasks.py`)
+- **Problema:** No Telegram o usuário cita tarefas por nomes abreviados ou apelidos (ex: *"conclui a tarefa do ifood"* ou *"reagenda cálculo"*), enquanto a API MCP exige o ID hexadecimal de 24 caracteres.
+- **Solução Técnica:**
+  - Implementado o método `find_task_by_identifier(identifier)` no `TaskDomainService`:
+    1. Reconhece IDs hexadecimais de 24 caracteres do TickTick.
+    2. Correspondência exata de título (case-insensitive).
+    3. Correspondência por substring inequívoca.
+    4. Correspondência por tokens/palavras-chave (token matching) entre as tarefas ativas do dia e atrasadas.
+  - Métodos `complete_task`, `delete_task` e `reschedule_task` operam com Smart Resolution transparente.
+  - Normalização estrita de `task_id` -> `id` e `due_date` -> ISO UTC (`+0000`) em todas as operações de lote e mutação.
+
+#### 3. Detecção de Nova Sessão Conversacional & Injeção de Contexto Operacional
+- **Problema:** No Antigravity, a ferramenta MCP `get_personal_context` pré-carrega todas as tarefas pendentes com seus respectivos IDs e metadados no contexto do modelo. No Telegram, as conversas iniciavam no escuro (cold start), sem que o modelo conhecesse os IDs do backlog ativo.
+- **Solução Técnica:**
+  - **Tabela de Sessões no Supabase (`chat_sessions`):** Registra `user_id`, `chat_id`, `last_interaction_at` e `session_count`.
+  - **Verificação de Fronteira (`check_and_update_session` em `src/services/database.py`):**
+    - Primeira interação registrada.
+    - Mais de 2 horas (7.200s) de inatividade.
+    - Mudança de dia civil no fuso horário de São Paulo (`America/Sao_Paulo`).
+  - **Serviço de Domínio de Sessão (`src/domain/session.py`):** Monta bloco de ancoragem operacional contendo:
+    1. Data, hora oficial de Brasília e momento circadiano.
+    2. Backlog completo do TickTick (tarefas de hoje e atrasadas com títulos, IDs hexadecimais e projetos).
+    3. Metas e modelo mental ativo do Erik (insights do perfil no Supabase).
+  - **Injeção Transparente no Telegram (`src/services/telegram_bot.py`):** Ao detectar nova sessão em `_process_text`, constrói o bloco operacional e repassa via `session_context` para o `run_stream` da Maeve.
+
+#### 4. Hierarquia Cognitiva Tri-Tier (Sonnet + Terra + Luna)
+- **Frontier Brain (Claude 3.5 Sonnet / `MAEVE_SMART_MODEL`):** Acionado exclusivamente para tarefas de alta complexidade (>=4), síntese densa do Obsidian Vault, modelagem arquitetural e deduções matemáticas em LaTeX MathJax.
+- **Operational Brain (GPT-5.6 Terra / `MAEVE_PLANNER_MODEL`):** Acionado para o domínio de tarefas (`tasks`), planejamento diário, rotinas, decomposição de projetos e time-blocking (complexidade 1 a 3).
+- **Pure Executor (GPT-5.6 Luna / `MAEVE_FAST_MODEL`):** Executor de ferramentas no nó `call_model` e emissor da resposta final, amigável e concisa ao usuário.
+- **Fast-Path (`none`):** Saudações e confirmações simples de turno anterior pulam a fase de planejamento e executam diretamente pelo Luna.
+
+#### 5. Verificação & Qualidade
+- Suíte completa de testes automatizados `src/test/test_tri_tier_ticktick_session.py` (19/19 testes aprovados em 0.03s), cobrindo Smart Task Resolution, normalização UTC, operações de domínio, detecção de fronteira de sessão e roteamento cognitivo Tri-Tier.

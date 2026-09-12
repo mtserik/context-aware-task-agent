@@ -4,6 +4,30 @@ from src.domain.tasks import TaskDomainService, normalize_ticktick_date
 
 _task_domain = TaskDomainService()
 
+
+@tool
+async def complete_ticktick_task(task_identifier: str):
+    """
+    Marca uma tarefa como CONCLUÍDA no TickTick.
+    Você pode passar tanto o ID único da tarefa (ex: '6aa32e32a24c513b6d6573e3')
+    quanto o TÍTULO aproximado da tarefa (ex: 'iFood', 'case analista', 'cálculo').
+    O sistema localiza a tarefa correspondente por Smart Resolution e executa a conclusão atômica no TickTick MCP.
+    """
+    result = await _task_domain.complete_task(task_identifier=task_identifier)
+    return result.to_agent_message()
+
+
+@tool
+async def reschedule_ticktick_task(task_identifier: str, due_date: str):
+    """
+    Reagenda ou altera o prazo de vencimento de uma tarefa no TickTick.
+    task_identifier: ID da tarefa ou título aproximado (ex: 'iFood', 'métodos numéricos').
+    due_date: nova data/hora no formato local ('YYYY-MM-DD' ou 'YYYY-MM-DDTHH:MM:SS') ou ISO UTC.
+    """
+    result = await _task_domain.reschedule_task(task_identifier=task_identifier, due_date=due_date)
+    return result.to_agent_message()
+
+
 @tool
 async def create_ticktick_task(
     title: str,
@@ -34,33 +58,6 @@ async def create_ticktick_task(
     )
     return result.to_agent_message()
 
-@tool
-async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
-    """
-    ÚNICA ferramenta para atualizar tarefas no TickTick (seja 1 ou várias).
-    Use para mudar datas, títulos, projetos ou concluir tarefas.
-    Cada objeto DEVE ter: {"task_id": "...", "title": "...", "project_id": "..."}
-    Campos suportados: "due_date" (Fim), "start_date" (Início), "status", "priority".
-    DICA: Para Time Blocking (duração), envie datas de início e fim no mesmo dia com horários diferentes.
-    """
-    result = await _task_domain.batch_update_tasks(tasks_to_update)
-    return result.to_agent_message()
-
-@tool
-async def create_ticktick_project(name: str, color: str = None, view_mode: str = "list"):
-    """Cria um novo projeto (lista) no TickTick. Prefere MCP com fallback para REST."""
-    result = await _task_domain.create_project(name=name, color=color, view_mode=view_mode)
-    return result.to_agent_message()
-
-@tool
-async def batch_create_ticktick_tasks(tasks: List[Dict[str, Any]]):
-    """
-    Cria múltiplas tarefas ou subtarefas no TickTick em lote via MCP em uma única chamada.
-    Use sempre que precisar criar listas de tarefas, projetos com histórias/entregáveis ou planos de ação.
-    Cada item na lista DEVE ser um dicionário: {"title": "...", "content": "...", "due_date": "...", "priority": 0, "project_id": "...", "parent_id": "..."}
-    """
-    result = await _task_domain.batch_create_tasks(tasks)
-    return result.to_agent_message()
 
 @tool
 async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
@@ -74,43 +71,6 @@ async def get_ticktick_tasks(date_filter: str = None, project_id: str = None):
     result = await _task_domain.get_tasks(date_filter=date_filter, project_id=project_id)
     return result.to_agent_message()
 
-@tool
-async def get_ticktick_item_details(item_id: str):
-    """
-    Obtém o conteúdo COMPLETO e detalhes de uma tarefa ou nota específica.
-    Use para ler o que está escrito dentro de uma nota antes de replicar no Obsidian.
-    """
-    result = await _task_domain.get_task_details(item_id=item_id)
-    return result.to_agent_message()
-
-@tool
-async def delete_ticktick_item(project_id: str, item_id: str):
-    """Remove definitivamente uma tarefa ou nota do TickTick."""
-    result = await _task_domain.delete_task(project_id=project_id, item_id=item_id)
-    return result.to_agent_message()
-
-@tool
-async def list_ticktick_structure(include_groups: bool = True):
-    """
-    Lista a estrutura de pastas (Grupos) e Listas (Projetos) do TickTick.
-    Use para se localizar e saber em qual lista criar ou buscar algo.
-    """
-    result = await _task_domain.list_structure(include_groups=include_groups)
-    return result.to_agent_message()
-
-@tool
-async def verify_task_creation(task_id: str):
-    """
-    Verifica se uma tarefa recém-criada realmente existe e em qual projeto ela caiu.
-    """
-    result = await _task_domain.verify_task(task_id=task_id)
-    return result.to_agent_message()
-
-@tool
-async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
-    """Obtém métricas via MCP (habits, focus_records, tasks_completed)."""
-    result = await _task_domain.get_metrics(query_type=query_type, start_date=start_date)
-    return result.to_agent_message()
 
 @tool
 async def create_focus_block(
@@ -136,30 +96,91 @@ async def create_focus_block(
     )
     return result.to_agent_message()
 
-from src.agent.tools.mcp_bridge import mcp_bridge
 
-_BASE_TASK_TOOLS = [
+@tool
+async def delete_ticktick_item(task_identifier: str):
+    """
+    Remove definitivamente uma tarefa ou nota do TickTick.
+    task_identifier: ID único ou título aproximado da tarefa (Smart Resolution).
+    """
+    result = await _task_domain.delete_task(task_identifier=task_identifier)
+    return result.to_agent_message()
+
+
+@tool
+async def batch_update_ticktick_tasks(tasks_to_update: List[Dict[str, Any]]):
+    """
+    Atualiza múltiplas tarefas no TickTick de uma só vez (mudança de prazos, prioridades, etc.).
+    Cada objeto pode ter: {"task_id": "...", "title": "...", "project_id": "...", "due_date": "...", "priority": ...}
+    """
+    result = await _task_domain.batch_update_tasks(tasks_to_update)
+    return result.to_agent_message()
+
+
+@tool
+async def batch_create_ticktick_tasks(tasks: List[Dict[str, Any]]):
+    """
+    Cria múltiplas tarefas ou subtarefas no TickTick em lote via MCP em uma única chamada.
+    Use sempre que precisar criar listas de tarefas, projetos com histórias/entregáveis ou planos de ação.
+    Cada item na lista DEVE ser um dicionário: {"title": "...", "content": "...", "due_date": "...", "priority": 0, "project_id": "...", "parent_id": "..."}
+    """
+    result = await _task_domain.batch_create_tasks(tasks)
+    return result.to_agent_message()
+
+
+@tool
+async def create_ticktick_project(name: str, color: str = None, view_mode: str = "list"):
+    """Cria um novo projeto (lista) no TickTick via MCP Oficial."""
+    result = await _task_domain.create_project(name=name, color=color, view_mode=view_mode)
+    return result.to_agent_message()
+
+
+@tool
+async def get_ticktick_item_details(item_id: str):
+    """
+    Obtém o conteúdo COMPLETO e detalhes de uma tarefa ou nota específica.
+    Use para ler o que está escrito dentro de uma nota antes de replicar no Obsidian.
+    """
+    result = await _task_domain.get_task_details(item_id=item_id)
+    return result.to_agent_message()
+
+
+@tool
+async def list_ticktick_structure(include_groups: bool = True):
+    """
+    Lista a estrutura de pastas (Grupos) e Listas (Projetos) do TickTick.
+    Use para se localizar e saber em qual lista criar ou buscar algo.
+    """
+    result = await _task_domain.list_structure(include_groups=include_groups)
+    return result.to_agent_message()
+
+
+@tool
+async def verify_task_creation(task_id: str):
+    """Verifica se uma tarefa recém-criada realmente existe e em qual projeto ela caiu."""
+    result = await _task_domain.verify_task(task_id=task_id)
+    return result.to_agent_message()
+
+
+@tool
+async def get_ticktick_metrics_via_mcp(query_type: str, start_date: str = None):
+    """Obtém métricas analíticas via MCP (habits, focus_records, tasks_completed)."""
+    result = await _task_domain.get_metrics(query_type=query_type, start_date=start_date)
+    return result.to_agent_message()
+
+
+TASK_TOOLS = [
+    complete_ticktick_task,
+    reschedule_ticktick_task,
     create_ticktick_task,
+    get_ticktick_tasks,
+    create_focus_block,
+    delete_ticktick_item,
+    batch_create_ticktick_tasks,
     batch_update_ticktick_tasks,
     create_ticktick_project,
-    get_ticktick_tasks,
     get_ticktick_item_details,
-    delete_ticktick_item,
     list_ticktick_structure,
     verify_task_creation,
     get_ticktick_metrics_via_mcp,
-    batch_create_ticktick_tasks,
-    create_focus_block,
 ]
-
-# Combina ferramentas de domínio com ferramentas dinâmicas nativas do TickTick MCP (ex: get_project_with_undone_tasks)
-_seen_tool_names = set()
-_all_task_tools = []
-
-for tool in _BASE_TASK_TOOLS + mcp_bridge.get_tools():
-    t_name = getattr(tool, "name", str(tool))
-    if t_name not in _seen_tool_names:
-        _seen_tool_names.add(t_name)
-        _all_task_tools.append(tool)
-
-TASK_TOOLS = _all_task_tools

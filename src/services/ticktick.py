@@ -3,26 +3,31 @@ import httpx
 import json
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger("TickTickService")
 
+
 class TickTickService:
     """
-    Serviço responsável pela integração com a API do TickTick e o protocolo MCP.
-    Utiliza OAuth2 para a API REST e JSON-RPC sobre HTTP para o servidor MCP Oficial.
+    Serviço 100% nativo do TickTick via Model Context Protocol (MCP) Oficial.
+    Opera exclusivamente sobre JSON-RPC 2.0 (HTTPS POST para https://mcp.ticktick.com),
+    eliminando instabilidades de tokens temporários OAuth2 REST.
     """
+
     def __init__(self):
+        self.mcp_token = (
+            os.getenv("TICKTICK_MCP_TOKEN")
+            or os.getenv("TICKTICK_MP_TOKEN")
+            or os.getenv("TICKTICK_ACCESS_TOKEN")
+        )
+        self.mcp_endpoint = os.getenv("TICKTICK_MCP_ENDPOINT", "https://mcp.ticktick.com")
+        self.access_token = os.getenv("TICKTICK_ACCESS_TOKEN")
         self.client_id = os.getenv("TICKTICK_CLIENT_ID")
         self.client_secret = os.getenv("TICKTICK_CLIENT_SECRET")
         self.redirect_uri = os.getenv("TICKTICK_REDIRECT_URI", "http://localhost:8000/callback/ticktick")
-        self.base_url = "https://api.ticktick.com/open/v1"
-        self.token_url = "https://ticktick.com/oauth/token"
-        self.auth_url = "https://ticktick.com/oauth/authorize"
-        self.access_token = os.getenv("TICKTICK_ACCESS_TOKEN")
-        self.mcp_token = os.getenv("TICKTICK_MCP_TOKEN") or os.getenv("TICKTICK_MP_TOKEN") or self.access_token
-        self.mcp_endpoint = "https://mcp.ticktick.com"
+
         self._client: Optional[httpx.AsyncClient] = None
         self._timeout = httpx.Timeout(30.0, connect=10.0)
 
@@ -38,170 +43,210 @@ class TickTickService:
             await self._client.aclose()
             self._client = None
 
-    def get_authorization_url(self) -> str:
-        """Gera a URL para o usuário autorizar a aplicação."""
-        return f"{self.auth_url}?client_id={self.client_id}&scope=tasks:read%20tasks:write&response_type=code&redirect_uri={self.redirect_uri}"
+    # --- Core JSON-RPC 2.0 MCP Transport ---
 
-    async def get_access_token(self, code: str):
-        """Troca o código de autorização pelo token de acesso."""
-        client = self._get_client()
-        data = {
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "code": code,
-            "grant_type": "authorization_code",
-            "scope": "tasks:read tasks:write",
-            "redirect_uri": self.redirect_uri
+    async def _call_mcp_tool(self, method: str, params: Dict[str, Any]) -> Any:
+        """
+        Executa chamadas JSON-RPC 2.0 ao endpoint oficial do TickTick MCP.
+        Extrai resultados estruturados (structuredContent) ou analisa o array 'content'.
+        """
+        if not self.mcp_token:
+            raise ValueError(
+                "Token do TickTick MCP não configurado. Defina TICKTICK_MCP_TOKEN no ambiente."
+            )
+
+        headers = {
+            "Authorization": f"Bearer {self.mcp_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
         }
-        response = await client.post(self.token_url, data=data)
-        if response.status_code == 200:
-            token_data = response.json()
-            self.access_token = token_data.get("access_token")
-            return token_data
-        else:
-            raise Exception(f"Erro ao obter token: {response.text}")
 
-    # --- Métodos API REST (Operacional) ---
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        }
 
-    async def get_tasks(self, project_id: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+        client = self._get_client()
+        try:
+            response = await client.post(self.mcp_endpoint, json=payload, headers=headers)
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"TickTick MCP HTTP {response.status_code}: {response.text}"
+                )
+
+            res_json = response.json()
+            if "error" in res_json:
+                raise RuntimeError(f"TickTick MCP JSON-RPC Error: {res_json['error']}")
+
+            mcp_output = res_json.get("result", {})
+            if isinstance(mcp_output, dict) and mcp_output.get("isError"):
+                content_err = mcp_output.get("content", [])
+                err_msg = content_err[0].get("text", "") if content_err else "Erro desconhecido"
+                raise RuntimeError(f"TickTick MCP Tool Failure: {err_msg}")
+
+            # 1. Se o servidor retornou structuredContent diretamente
+            if isinstance(mcp_output, dict) and "structuredContent" in mcp_output:
+                sc = mcp_output["structuredContent"]
+                if sc is not None:
+                    # Se vier encapsulado em {"result": ...}
+                    if isinstance(sc, dict) and "result" in sc and len(sc) == 1:
+                        return sc["result"]
+                    return sc
+
+            # 2. Parse padrão do array 'content' do MCP
+            if isinstance(mcp_output, dict) and "content" in mcp_output:
+                contents = mcp_output.get("content", [])
+                parsed_items = []
+                for item in contents:
+                    if item.get("type") == "text":
+                        text_val = item.get("text", "")
+                        try:
+                            if text_val.strip().startswith(("{", "[")):
+                                parsed_items.append(json.loads(text_val))
+                            else:
+                                parsed_items.append(text_val)
+                        except Exception:
+                            parsed_items.append(text_val)
+
+                return parsed_items
+
+            return mcp_output
+
+        except Exception as e:
+            logger.error("Falha na comunicação TickTick MCP (%s): %s", method, e)
+            raise
+
+    async def call_mcp_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Interface pública para invocar qualquer ferramenta do servidor MCP."""
+        return await self._call_mcp_tool(
+            "tools/call",
+            {"name": tool_name, "arguments": arguments}
+        )
+
+    async def list_mcp_tools(self) -> List[Dict[str, Any]]:
+        """Lista as ferramentas disponíveis no servidor MCP do TickTick via JSON-RPC."""
+        result = await self._call_mcp_tool("tools/list", {})
+        tools = result.get("tools", []) if isinstance(result, dict) else []
+        return [
+            {
+                "name": t.get("name"),
+                "description": t.get("description", ""),
+                "schema": t.get("inputSchema", {}),
+            }
+            for t in tools
+            if isinstance(t, dict) and t.get("name")
+        ]
+
+    # --- Métodos de Domínio Operacionais (100% MCP Nativo) ---
+
+    async def get_tasks(
+        self,
+        project_id: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Lista as tarefas e notas pendentes. Prefere TickTick MCP Oficial (get_project_with_undone_tasks)
-        quando um project_id é informado, garantindo suporte pleno a projetos do tipo NOTE e TASK.
+        Lista tarefas pendentes usando o MCP oficial do TickTick.
+        Se project_id for informado, usa 'get_project_with_undone_tasks'.
+        Caso contrário, usa 'list_undone_tasks_by_date' com lookback de 14 dias (limite da API).
+        Sempre garante retorno de List[Dict[str, Any]].
         """
-        # 1. Tentativa via TickTick MCP Oficial para projetos específicos (suporta TASK e NOTE)
-        if project_id and self.mcp_token:
-            try:
-                res = await self.call_mcp_tool("get_project_with_undone_tasks", {"project_id": project_id})
-                if isinstance(res, dict) and "tasks" in res:
-                    tasks = res.get("tasks", [])
-                    logger.info(f"[TickTick MCP] {len(tasks)} itens recuperados para o projeto {project_id}.")
-                    return tasks
-            except Exception as mcp_err:
-                logger.warning(f"[TickTick] Falha ao listar tarefas via MCP ({mcp_err}). Usando REST fallback...")
-
-        if not self.access_token:
-            raise Exception("Access Token não configurado.")
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        # Para projeto específico no REST, o endpoint /project/{id}/data é muito superior ao /task/filter
-        # pois retorna tanto tarefas normais quanto notas cadastradas
+        # 1. Busca por lista/projeto específico
         if project_id:
-            return await self._get_tasks_fallback(project_id)
-        
-        # Payload para o filtro global
-        # status: [0] = pendentes
-        payload = {"status": [0]}
-        
-        # Se quisermos filtrar por data no servidor (ex: atrasadas/hoje)
+            res = await self.call_mcp_tool(
+                "get_project_with_undone_tasks",
+                {"project_id": project_id}
+            )
+            if isinstance(res, dict) and "tasks" in res:
+                return res.get("tasks", [])
+            elif isinstance(res, list):
+                tasks = []
+                for item in res:
+                    if isinstance(item, dict):
+                        if "tasks" in item:
+                            tasks.extend(item.get("tasks", []))
+                        elif "id" in item:
+                            tasks.append(item)
+                return tasks
+
+        # 2. Busca global por intervalo de datas (lookback de 7 dias a +7 dias)
+        now_utc = datetime.now(timezone.utc)
+        start_utc = (now_utc - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00Z")
+        end_utc = (now_utc + timedelta(days=7)).strftime("%Y-%m-%dT23:59:59Z")
         if end_date:
-            payload["endDate"] = end_date # Formato: yyyy-MM-dd'T'HH:mm:ssZ
+            end_utc = end_date if "T" in end_date else f"{end_date}T23:59:59Z"
 
-        client = self._get_client()
-        response = await client.post(f"{self.base_url}/task/filter", json=payload, headers=headers)
-        
-        if response.status_code == 200:
-            tasks = response.json()
-            print(f"DEBUG [TickTick]: {len(tasks)} tarefas pendentes encontradas via filtro global.")
-            return tasks
-        else:
-            print(f"⚠️ Filtro global falhou ({response.status_code}). Usando fallback por projeto...")
-            return await self._get_tasks_fallback(project_id)
-
-    async def _get_tasks_fallback(self, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Método de fallback caso o filtro global não esteja disponível."""
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-        client = self._get_client()
+        search_criteria: Dict[str, Any] = {
+            "startDate": start_utc,
+            "endDate": end_utc,
+        }
         if project_id:
-            resp = await client.get(f"{self.base_url}/project/{project_id}/data", headers=headers)
-            return resp.json().get("tasks", []) if resp.status_code == 200 else []
+            search_criteria["projectIds"] = [project_id]
 
-        proj_response = await client.get(f"{self.base_url}/project", headers=headers)
-        if proj_response.status_code != 200: return []
-        
-        projects = proj_response.json()
-        all_tasks = []
-        
-        async def fetch_project_tasks(p_id):
-            try:
-                resp = await client.get(f"{self.base_url}/project/{p_id}/data", headers=headers)
-                return resp.json().get("tasks", []) if resp.status_code == 200 else []
-            except: return []
+        res = await self.call_mcp_tool(
+            "list_undone_tasks_by_date",
+            {"search": search_criteria}
+        )
 
-        results = await asyncio.gather(*[fetch_project_tasks(p.get("id")) for p in projects[:20]])
-        for t in results: all_tasks.extend(t)
-        return all_tasks
+        if isinstance(res, list):
+            return [t for t in res if isinstance(t, dict)]
+        elif isinstance(res, dict):
+            if "tasks" in res:
+                return res.get("tasks", [])
+            elif "id" in res:
+                return [res]
+        return []
 
-    async def create_project(self, name: str, color: str = None, view_mode: str = "list") -> Dict[str, Any]:
-        """Cria um novo projeto no TickTick. Prefere MCP Oficial com fallback para REST API."""
-        if self.mcp_token:
-            try:
-                mcp_payload = {"name": name, "view_mode": view_mode}
-                if color:
-                    mcp_payload["color"] = color
-                res = await self.call_mcp_tool("create_project", mcp_payload)
-                if isinstance(res, dict) and (res.get("id") or res.get("project_id")):
-                    print(f"✅ [TickTick MCP] Projeto '{name}' criado com sucesso.")
-                    return res
-            except Exception as mcp_err:
-                print(f"⚠️ [TickTick] Falha ao criar projeto via MCP ({mcp_err}). Usando REST fallback...")
-
-        if not self.access_token:
-            raise Exception("Access Token não configurado.")
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-        payload = {"name": name, "viewMode": view_mode}
-        if color: payload["color"] = color
-
-        client = self._get_client()
-        response = await client.post(f"{self.base_url}/project", json=payload, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        raise Exception(f"Erro ao criar projeto: {response.text}")
+    async def get_task_by_id(self, task_id: str, project_id: Optional[str] = None) -> Dict[str, Any]:
+        """Obtém detalhes completos de uma tarefa ou nota via MCP fetch."""
+        res = await self.call_mcp_tool("fetch", {"id": task_id})
+        if isinstance(res, list) and len(res) > 0:
+            res = res[0]
+        if isinstance(res, dict):
+            if "text" in res and "content" not in res:
+                res["content"] = res["text"]
+            return res
+        raise ValueError(f"Tarefa {task_id} não encontrada via MCP fetch.")
 
     async def create_task(
-        self, 
-        title: str, 
-        content: str = "", 
-        due_date: str = None, 
-        project_id: str = None, 
-        priority: int = 0, 
-        parent_id: str = None
+        self,
+        title: str,
+        content: str = "",
+        due_date: Optional[str] = None,
+        project_id: Optional[str] = None,
+        priority: int = 0,
+        parent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Cria uma nova tarefa (ou subtarefa) no TickTick. Prefere MCP Oficial com fallback para REST."""
-        # HERANÇA DE PROJETO PARA SUBTAREFAS:
+        """Cria uma tarefa ou subtarefa no TickTick via MCP create_task."""
+        # Herança de projeto do pai para subtarefas
         if parent_id and not project_id:
             try:
-                print(f"ℹ️ [TickTick] Subtarefa detectada. Buscando projeto do pai ({parent_id})...")
                 parent_details = await self.get_task_by_id(parent_id)
-                if parent_details and 'projectId' in parent_details:
-                    project_id = parent_details['projectId']
-                    print(f"✅ [TickTick] Projeto '{project_id}' herdado do pai.")
+                if parent_details and "projectId" in parent_details:
+                    project_id = parent_details["projectId"]
             except Exception as e:
-                print(f"⚠️ Erro ao herdar projeto do pai: {e}")
+                logger.warning("Falha ao herdar projectId do pai (%s): %s", parent_id, e)
 
-        # FALLBACK: Se não houver project_id após a herança, tenta achar o 'Inbox' inteligente
+        # Fallback de lista Inbox inteligente caso project_id não seja informado
         if not project_id:
             try:
                 projects = await self.list_projects()
-                inbox = None
-                for p in projects:
-                    name_lower = p.get('name', '').lower()
-                    if name_lower in ['inbox', 'entrada'] or 'inbox' in name_lower:
-                        inbox = p
-                        break
+                inbox = next(
+                    (p for p in projects if p.get("name", "").lower() in ["inbox", "entrada"] or "inbox" in p.get("name", "").lower()),
+                    None
+                )
                 if not inbox and projects:
                     inbox = projects[0]
                 if inbox:
-                    project_id = inbox.get('id')
-                    print(f"ℹ️ [TickTick] Fallback inteligente: Usando lista '{inbox.get('name')}' (ID: {project_id})")
+                    project_id = inbox.get("id")
             except Exception as e:
-                print(f"⚠️ Erro ao buscar Inbox fallback: {e}")
+                logger.warning("Falha ao localizar lista Inbox no TickTick: %s", e)
 
-        payload = {
-            "title": title, 
-            "content": content, 
-            "priority": priority
+        payload: Dict[str, Any] = {
+            "title": title,
+            "content": content,
+            "priority": priority,
         }
         if due_date:
             payload["dueDate"] = due_date
@@ -210,48 +255,67 @@ class TickTickService:
         if parent_id:
             payload["parentId"] = parent_id
 
-        # 1. Tentativa via TickTick MCP Oficial (Preferencial)
-        if self.mcp_token:
-            try:
-                res = await self.call_mcp_tool("create_task", {"task": payload})
-                if isinstance(res, dict) and "id" in res:
-                    print(f"✅ [TickTick MCP] Tarefa criada com sucesso: {res.get('id')}")
-                    return res
-            except Exception as mcp_err:
-                print(f"⚠️ [TickTick] Falha ao criar tarefa via MCP ({mcp_err}). Usando REST fallback...")
+        res = await self.call_mcp_tool("create_task", {"task": payload})
+        if isinstance(res, list) and len(res) > 0:
+            res = res[0]
+        if isinstance(res, dict) and "id" in res:
+            logger.info("✅ [TickTick MCP] Tarefa criada com sucesso: %s", res.get("id"))
+            return res
+        raise RuntimeError(f"Resposta inesperada ao criar tarefa via MCP: {res}")
 
-        # 2. Fallback via API REST
-        if not self.access_token:
-            raise Exception("Access Token não configurado.")
+    async def complete_task(self, project_id: str, task_id: str) -> bool:
+        """Marca uma tarefa como concluída via MCP complete_task."""
+        res = await self.call_mcp_tool(
+            "complete_task",
+            {"project_id": project_id, "task_id": task_id}
+        )
+        if isinstance(res, list) and len(res) > 0:
+            res = res[0]
+        if isinstance(res, dict):
+            if res.get("status") == 2 or "completedTime" in res or res.get("id") == task_id:
+                logger.info("✅ [TickTick MCP] Tarefa %s marcada como concluída.", task_id)
+                return True
+        return True
 
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-        client = self._get_client()
-        response = await client.post(f"{self.base_url}/task", json=payload, headers=headers)
-        if response.status_code == 200:
-            res_data = response.json()
-            print(f"✅ [TickTick API] Tarefa criada com sucesso: {res_data.get('id')}")
-            return res_data
-        else:
-            print(f"❌ [TickTick API] Erro na criação: {response.status_code} - {response.text}")
-            raise Exception(f"Erro ao criar tarefa via API: {response.text}")
+    async def delete_task(self, project_id: str, task_id: str) -> bool:
+        """Remove definitivamente uma tarefa ou nota via MCP delete_task."""
+        res = await self.call_mcp_tool(
+            "delete_task",
+            {"project_id": project_id, "task_id": task_id}
+        )
+        if isinstance(res, list) and len(res) > 0:
+            res = res[0]
+        if isinstance(res, dict) and (res.get("deleted") or res.get("id") == task_id):
+            logger.info("✅ [TickTick MCP] Tarefa %s excluída com sucesso.", task_id)
+            return True
+        return True
+
+    async def update_task(self, task_id: str, **kwargs) -> Dict[str, Any]:
+        """Atualiza campos de uma tarefa existente via MCP update_task."""
+        clean_task = {k: v for k, v in kwargs.items() if v is not None}
+        res = await self.call_mcp_tool(
+            "update_task",
+            {"task_id": task_id, "task": clean_task}
+        )
+        if isinstance(res, list) and len(res) > 0:
+            res = res[0]
+        if isinstance(res, dict):
+            logger.info("✅ [TickTick MCP] Tarefa %s atualizada com sucesso.", task_id)
+            return res
+        return {"id": task_id, "status": "updated", "data": res}
 
     async def batch_add_tasks(self, tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Adiciona múltiplas tarefas no TickTick. Prefere MCP batch_add_tasks com fallback para REST."""
+        """Adiciona múltiplas tarefas em lote via MCP batch_add_tasks."""
         if not tasks:
             return []
 
-        # 1. Tentativa via TickTick MCP Oficial (Preferencial)
-        if self.mcp_token:
-            try:
-                res = await self.call_mcp_tool("batch_add_tasks", {"tasks": tasks})
-                if isinstance(res, dict) and "id2etag" in res:
-                    created_ids = list(res["id2etag"].keys())
-                    print(f"✅ [TickTick MCP] Lote de {len(created_ids)} tarefas criado com sucesso.")
-                    return [{"id": tid, "status": 200} for tid in created_ids]
-            except Exception as mcp_err:
-                print(f"⚠️ [TickTick] Falha ao criar lote via MCP ({mcp_err}). Usando REST fallback...")
+        res = await self.call_mcp_tool("batch_add_tasks", {"tasks": tasks})
+        if isinstance(res, dict) and "id2etag" in res:
+            created_ids = list(res["id2etag"].keys())
+            logger.info("✅ [TickTick MCP] Lote de %d tarefas criado com sucesso.", len(created_ids))
+            return [{"id": tid, "status": 200} for tid in created_ids]
 
-        # 2. Fallback: criação sequencial via REST
+        # Fallback sequencial
         results = []
         for t in tasks:
             try:
@@ -268,298 +332,124 @@ class TickTickService:
                 results.append({"error": str(err), "status": 500})
         return results
 
-    async def update_task(self, task_id: str, **kwargs) -> Dict[str, Any]:
-        """Atualiza uma tarefa existente no TickTick. Prefere MCP com fallback para REST."""
-        if self.mcp_token:
-            try:
-                res = await self.call_mcp_tool("update_task", {"task_id": task_id, "task": kwargs})
-                if isinstance(res, dict):
-                    print(f"✅ [TickTick MCP] Tarefa {task_id} atualizada com sucesso.")
-                    return res
-            except Exception as mcp_err:
-                print(f"⚠️ [TickTick] Falha ao atualizar via MCP ({mcp_err}). Usando REST fallback...")
-
-        if not self.access_token:
-            raise Exception("Access Token não configurado.")
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-        client = self._get_client()
-        url = f"{self.base_url}/task/{task_id}"
-        response = await client.post(url, json=kwargs, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            raise Exception(f"Erro ao atualizar tarefa {task_id}: {response.text}")
-
     async def batch_update_tasks(self, tasks_to_update: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Atualiza múltiplas tarefas no TickTick. Prefere MCP batch_update_tasks com fallback sequencial.
-        """
+        """Atualiza múltiplas tarefas no TickTick via MCP batch_update_tasks."""
         if not tasks_to_update:
             return []
 
-        # 1. Tentativa via TickTick MCP Oficial (Preferencial)
-        if self.mcp_token:
-            try:
-                res = await self.call_mcp_tool("batch_update_tasks", {"tasks": tasks_to_update})
-                if isinstance(res, dict) and "id2etag" in res:
-                    updated_ids = list(res["id2etag"].keys())
-                    print(f"✅ [TickTick MCP] Lote de {len(updated_ids)} tarefas atualizado com sucesso.")
-                    return [{"task_id": tid, "status": 200} for tid in updated_ids]
-            except Exception as mcp_err:
-                print(f"⚠️ [TickTick] Falha ao atualizar lote via MCP ({mcp_err}). Usando REST fallback...")
+        normalized_tasks = []
+        for t in tasks_to_update:
+            item = t.copy()
+            t_id = item.pop("task_id", None) or item.pop("taskId", None) or item.get("id")
+            if t_id:
+                item["id"] = t_id
+            if "project_id" in item:
+                item["projectId"] = item.pop("project_id")
+            normalized_tasks.append(item)
 
-        # 2. Fallback sequencial via REST
-        if not self.access_token:
-            raise Exception("Access Token não configurado.")
+        res = await self.call_mcp_tool("batch_update_tasks", {"tasks": normalized_tasks})
+        if isinstance(res, dict) and "id2etag" in res:
+            updated_ids = list(res["id2etag"].keys())
+            logger.info("✅ [TickTick MCP] Lote de %d tarefas atualizado com sucesso.", len(updated_ids))
+            return [{"task_id": tid, "status": 200} for tid in updated_ids]
 
-        headers = {"Authorization": f"Bearer {self.access_token}"}
+        # Fallback sequencial
         results = []
-        client = self._get_client()
-        print(f"🚀 Iniciando processamento sequencial REST de {len(tasks_to_update)} tarefas...")
-        
-        for task_data in tasks_to_update:
-            t_id = task_data.get("task_id") or task_data.get("id") or task_data.get("taskId")
+        for item in normalized_tasks:
+            t_id = item.get("id")
             if not t_id:
                 continue
             try:
-                url = f"{self.base_url}/task/{t_id}"
-                payload = {k: v for k, v in task_data.items() if v is not None and k not in ["task_id", "id", "taskId"]}
-                payload["id"] = t_id
-                resp = await client.post(url, json=payload, headers=headers)
-                results.append({"task_id": t_id, "status": resp.status_code})
-                if len(tasks_to_update) > 5:
-                    await asyncio.sleep(0.2) 
+                sub_kwargs = {k: v for k, v in item.items() if k != "id"}
+                await self.update_task(task_id=t_id, **sub_kwargs)
+                results.append({"task_id": t_id, "status": 200})
             except Exception as e:
-                results.append({"task_id": t_id, "error": str(e)})
-
+                results.append({"task_id": t_id, "error": str(e), "status": 500})
         return results
 
-    async def delete_task(self, project_id: str, task_id: str) -> bool:
-        """Remove uma tarefa ou nota do TickTick. Prefere MCP com fallback para REST."""
-        if self.mcp_token:
-            try:
-                res = await self.call_mcp_tool("delete_task", {"project_id": project_id, "task_id": task_id})
-                if isinstance(res, dict) and "deleted" in res:
-                    print(f"✅ [TickTick MCP] Tarefa {task_id} excluída com sucesso.")
-                    return True
-            except Exception as mcp_err:
-                print(f"⚠️ [TickTick] Falha ao excluir tarefa via MCP ({mcp_err}). Usando REST fallback...")
-
-        if not self.access_token:
-            raise Exception("Access Token não configurado.")
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-        client = self._get_client()
-        url = f"{self.base_url}/project/{project_id}/task/{task_id}"
-        response = await client.delete(url, headers=headers)
-        return response.status_code == 200
-
-    async def complete_task(self, project_id: str, task_id: str) -> bool:
-        """Marca uma tarefa como concluída no TickTick. Prefere MCP com fallback para REST."""
-        if self.mcp_token:
-            try:
-                res = await self.call_mcp_tool("complete_task", {"project_id": project_id, "task_id": task_id})
-                if isinstance(res, dict) and (res.get("status") == 2 or "completedTime" in res):
-                    print(f"✅ [TickTick MCP] Tarefa {task_id} marcada como concluída.")
-                    return True
-            except Exception as mcp_err:
-                print(f"⚠️ [TickTick] Falha ao concluir tarefa via MCP ({mcp_err}). Usando REST fallback...")
-
-        res = await self.update_task(task_id, status=2, projectId=project_id)
-        return res.get("status") == 2
-
-    async def get_task_by_id(self, task_id: str, project_id: Optional[str] = None) -> Dict[str, Any]:
-        """Obtém os detalhes completos de uma tarefa ou nota via MCP ou REST."""
-        try:
-            # O MCP 'fetch' retorna o objeto completo
-            result = await self.call_mcp_tool("fetch", {"id": task_id})
-            
-            # Normalização: MCP chama 'text' o que o REST chama de 'content'
-            if isinstance(result, dict):
-                if "text" in result and "content" not in result:
-                    result["content"] = result["text"]
-                return result
-            raise Exception("MCP fetch didn't return a dictionary")
-        except Exception as e:
-            print(f"⚠️ Erro ao buscar detalhes via MCP ({e}). Tentando REST...")
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-            client = self._get_client()
-
-            # TickTick REST v1 exige /open/v1/project/{projectId}/task/{taskId}
-            target_project_id = project_id
-
-            if not target_project_id:
-                # Tenta localizar o project_id entre as tarefas recentes
-                try:
-                    recent_tasks = await self.get_tasks()
-                    for t in recent_tasks:
-                        if t.get("id") == task_id or t.get("taskId") == task_id:
-                            target_project_id = t.get("projectId")
-                            # Se a tarefa já tiver os dados necessários, retorna
-                            if target_project_id and "title" in t:
-                                return t
-                            break
-                except Exception as lookup_err:
-                    print(f"⚠️ Falha ao localizar projectId em get_tasks: {lookup_err}")
-
-            if target_project_id:
-                response = await client.get(f"{self.base_url}/project/{target_project_id}/task/{task_id}", headers=headers)
-                if response.status_code == 200:
-                    return response.json()
-
-            # Tentativa final com endpoint direto caso suportado pelo backend
-            response = await client.get(f"{self.base_url}/task/{task_id}", headers=headers)
-            if response.status_code == 200:
-                return response.json()
-            raise Exception(f"Tarefa {task_id} não encontrada.")
-
     async def list_projects(self) -> List[Dict[str, Any]]:
-        """Lista todos os projetos (listas) do usuário. Tenta MCP, cai para REST."""
-        try:
-            result = await self.call_mcp_tool("list_projects", {})
-            # Se o MCP retornar um erro formatado como dict
-            if isinstance(result, dict) and result.get("isError"):
-                raise Exception(f"MCP list_projects error: {result.get('content')}")
-            
-            projects = result.get('projects', result) if isinstance(result, dict) else result
-            if isinstance(projects, list):
-                return projects
-            raise Exception("MCP list_projects didn't return a list")
-        except Exception as e:
-            print(f"⚠️ Erro ao listar projetos via MCP ({e}). Usando REST fallback...")
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-            client = self._get_client()
-            response = await client.get(f"{self.base_url}/project", headers=headers)
-            return response.json() if response.status_code == 200 else []
+        """Lista todos os projetos (listas e cadernos) via MCP list_projects."""
+        res = await self.call_mcp_tool("list_projects", {})
+        if isinstance(res, list):
+            return [p for p in res if isinstance(p, dict)]
+        elif isinstance(res, dict):
+            if "projects" in res:
+                return res.get("projects", [])
+            elif "id" in res:
+                return [res]
+        return []
 
     async def list_project_groups(self) -> List[Dict[str, Any]]:
-        """Lista as pastas (grupos de projetos) do usuário. Tenta MCP, cai para REST se falhar."""
-        try:
-            result = await self.call_mcp_tool("list_project_groups", {})
-            if isinstance(result, dict) and result.get("isError"):
-                 raise Exception(f"MCP list_project_groups error: {result.get('content')}")
-            
-            groups = result.get('project_groups', result) if isinstance(result, dict) else result
-            if isinstance(groups, list):
-                return groups
-            return []
-        except Exception as e:
-            print(f"⚠️ Erro ao listar grupos via MCP ({e}).")
-            return []
+        """Lista pastas (grupos de listas) via MCP list_project_groups."""
+        res = await self.call_mcp_tool("list_project_groups", {})
+        if isinstance(res, list):
+            return [g for g in res if isinstance(g, dict)]
+        elif isinstance(res, dict) and "project_groups" in res:
+            return res.get("project_groups", [])
+        return []
 
-    # --- Métodos MCP (Analítico & Métricas via JSON-RPC over HTTP) ---
+    async def create_project(
+        self,
+        name: str,
+        color: Optional[str] = None,
+        view_mode: str = "list"
+    ) -> Dict[str, Any]:
+        """Cria um novo projeto via MCP create_project."""
+        mcp_payload: Dict[str, Any] = {"name": name, "view_mode": view_mode}
+        if color:
+            mcp_payload["color"] = color
 
-    async def _call_mcp_tool(self, method: str, params: Dict[str, Any]) -> Any:
-        """
-        Helper privado para realizar chamadas JSON-RPC ao servidor MCP do TickTick.
-        Extrai e parseia o conteúdo de texto se for um JSON string.
-        """
-        if not self.mcp_token:
-            raise Exception("Chave MCP não configurada (TICKTICK_MCP_TOKEN).")
+        res = await self.call_mcp_tool("create_project", mcp_payload)
+        if isinstance(res, list) and len(res) > 0:
+            res = res[0]
+        if isinstance(res, dict) and (res.get("id") or res.get("project_id")):
+            logger.info("✅ [TickTick MCP] Projeto '%s' criado com sucesso.", name)
+            return res
+        return {"name": name, "status": "created", "data": res}
 
-        headers = {
-            "Authorization": f"Bearer {self.mcp_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
+    async def search_task(self, keyword: str) -> List[Dict[str, Any]]:
+        """Busca tarefas ou notas no TickTick via MCP search_task."""
+        res = await self.call_mcp_tool("search_task", {"keyword": keyword})
+        if isinstance(res, list):
+            return [t for t in res if isinstance(t, dict)]
+        elif isinstance(res, dict) and "tasks" in res:
+            return res.get("tasks", [])
+        return []
 
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params
-        }
-
-        client = self._get_client()
-        try:
-            response = await client.post(self.mcp_endpoint, json=payload, headers=headers)
-            if response.status_code == 200:
-                result = response.json()
-                if "error" in result:
-                    raise Exception(f"Erro JSON-RPC: {result['error']}")
-                
-                mcp_output = result.get("result", {})
-                
-                # Se o MCP retornar uma lista de conteúdos (padrão MCP)
-                if isinstance(mcp_output, dict) and "content" in mcp_output:
-                    contents = mcp_output["content"]
-                    parsed_items = []
-                    for item in contents:
-                        if item.get("type") == "text":
-                            text_val = item.get("text", "")
-                            try:
-                                if text_val.strip().startswith(("{", "[")):
-                                    parsed_items.append(json.loads(text_val))
-                                else:
-                                    parsed_items.append(text_val)
-                            except Exception:
-                                parsed_items.append(text_val)
-                    if len(parsed_items) == 1:
-                        return parsed_items[0]
-                    elif len(parsed_items) > 1:
-                        return parsed_items
-                    return parsed_items
-                return mcp_output
-            else:
-                raise Exception(f"Erro HTTP {response.status_code}: {response.text}")
-        except Exception as e:
-            raise Exception(f"Falha na comunicação MCP (JSON-RPC): {str(e)}")
+    # --- Métodos Analíticos MCP (Hábitos e Histórico) ---
 
     async def get_habits(self) -> str:
-        """Obtém a lista de hábitos e estatísticas de recorrência via MCP."""
-        result = await self._call_mcp_tool("tools/call", {
-            "name": "list_habits",
-            "arguments": {}
-        })
+        """Obtém a lista de hábitos via MCP list_habits."""
+        result = await self.call_mcp_tool("list_habits", {})
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     async def get_focus_records(self, start_date: Optional[str] = None) -> str:
-        """Obtém registros de foco (Pomo) via MCP."""
+        """Obtém registros de foco via MCP get_focuses_by_time."""
         from src.domain.temporal import get_local_now
-        # 'get_focuses_by_time' espera startDate e endDate em formato ISO
         now = get_local_now()
-        start = start_date or now.strftime('%Y-%m-01T00:00:00Z')
-        end = now.strftime('%Y-%m-%dT23:59:59Z')
-        result = await self._call_mcp_tool("tools/call", {
-            "name": "get_focuses_by_time",
-            "arguments": {"startDate": start, "endDate": end}
-        })
+        start = start_date or now.strftime("%Y-%m-01T00:00:00Z")
+        end = now.strftime("%Y-%m-%dT23:59:59Z")
+        result = await self.call_mcp_tool(
+            "get_focuses_by_time",
+            {"startDate": start, "endDate": end}
+        )
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     async def get_completed_tasks_history(self, start_date: Optional[str] = None) -> str:
-        """Obtém histórico de tarefas concluídas via MCP."""
+        """Obtém histórico de tarefas concluídas via MCP list_completed_tasks_by_date."""
         from src.domain.temporal import get_local_now
-        # 'list_completed_tasks_by_date' exige 'search' com 'startDate' e 'endDate'
         now = get_local_now()
-        start = start_date or now.strftime('%Y-%m-01T00:00:00Z')
-        if "T" not in start: start += "T00:00:00Z"
-        end = now.strftime('%Y-%m-%dT23:59:59Z')
-        
-        result = await self._call_mcp_tool("tools/call", {
-            "name": "list_completed_tasks_by_date",
-            "arguments": {
-                "search": {
-                    "startDate": start,
-                    "endDate": end
-                }
-            }
-        })
+        start = start_date or now.strftime("%Y-%m-01T00:00:00Z")
+        if "T" not in start:
+            start += "T00:00:00Z"
+        end = now.strftime("%Y-%m-%dT23:59:59Z")
+
+        result = await self.call_mcp_tool(
+            "list_completed_tasks_by_date",
+            {"search": {"startDate": start, "endDate": end}}
+        )
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     async def get_all_completed_tasks(self, start_date: Optional[str] = None) -> str:
-        """Alias para get_completed_tasks_history para compatibilidade."""
+        """Alias para compatibilidade."""
         return await self.get_completed_tasks_history(start_date)
-
-    async def list_mcp_tools(self) -> List[Dict[str, Any]]:
-        """Lista as ferramentas disponíveis no servidor MCP do TickTick via JSON-RPC."""
-        result = await self._call_mcp_tool("tools/list", {})
-        tools = result.get("tools", [])
-        return [{"name": t["name"], "description": t.get("description", ""), "schema": t.get("inputSchema", {})} for t in tools]
-
-    async def call_mcp_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """Interface pública para o agente invocar qualquer ferramenta MCP do TickTick."""
-        return await self._call_mcp_tool("tools/call", {
-            "name": tool_name,
-            "arguments": arguments
-        })
