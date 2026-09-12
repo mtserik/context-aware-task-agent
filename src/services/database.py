@@ -131,8 +131,17 @@ class DatabaseService:
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                await cur.execute("CREATE INDEX IF NOT EXISTS idx_user_insights_user_id ON user_insights(user_id)")
-                await cur.execute("CREATE INDEX IF NOT EXISTS idx_user_insights_category ON user_insights(category)")
+                # Tabela de Sessões de Chat (Detecção de Nova Conversa)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS chat_sessions (
+                        user_id TEXT NOT NULL,
+                        chat_id TEXT NOT NULL,
+                        last_interaction_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                        session_count INT DEFAULT 1,
+                        metadata JSONB DEFAULT '{}'::jsonb,
+                        PRIMARY KEY (user_id, chat_id)
+                    )
+                """)
 
                 logger.info("Tabelas customizadas verificadas/criadas no Supabase.")
 
@@ -272,4 +281,90 @@ class DatabaseService:
                     }
                     for r in rows
                 ]
+
+    # --- Gestão de Sessões Conversacionais (Telegram / Contexto Inicial) ---
+
+    async def check_and_update_session(
+        self,
+        user_id: str,
+        chat_id: str,
+        threshold_seconds: int = 7200,
+    ) -> bool:
+        """
+        Verifica se a interação atual deve ser considerada uma NOVA CONVERSA (Sessão).
+        Critérios:
+        1. Primeira interação registrada do usuário.
+        2. Mais de 2 horas (threshold_seconds) de inatividade desde a última mensagem.
+        3. Mudança de dia civil no fuso de São Paulo (America/Sao_Paulo).
+        Atualiza o carimbo last_interaction_at para o momento atual.
+        """
+        from zoneinfo import ZoneInfo
+        from datetime import datetime, timezone
+        sp_tz = ZoneInfo("America/Sao_Paulo")
+        now_utc = datetime.now(timezone.utc)
+        now_sp = now_utc.astimezone(sp_tz)
+
+        try:
+            pool = await self.get_pool()
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT last_interaction_at, session_count FROM chat_sessions WHERE user_id = %s AND chat_id = %s",
+                        (user_id, chat_id)
+                    )
+                    row = await cur.fetchone()
+                    is_new_session = False
+                    if row is None:
+                        is_new_session = True
+                        new_count = 1
+                    else:
+                        last_utc = row[0]
+                        session_count = row[1] or 1
+                        if last_utc.tzinfo is None:
+                            last_utc = last_utc.replace(tzinfo=timezone.utc)
+                        last_sp = last_utc.astimezone(sp_tz)
+
+                        elapsed = (now_utc - last_utc).total_seconds()
+                        if elapsed >= threshold_seconds or now_sp.date() != last_sp.date():
+                            is_new_session = True
+                            new_count = session_count + 1
+                        else:
+                            is_new_session = False
+                            new_count = session_count
+
+                    await cur.execute("""
+                        INSERT INTO chat_sessions (user_id, chat_id, last_interaction_at, session_count)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (user_id, chat_id)
+                        DO UPDATE SET last_interaction_at = EXCLUDED.last_interaction_at,
+                                      session_count = EXCLUDED.session_count;
+                    """, (user_id, chat_id, now_utc, new_count))
+
+                    return is_new_session
+        except Exception as e:
+            logger.warning("Falha ao checar/atualizar sessão no Supabase (%s). Defaulting to False.", e)
+            return False
+
+    async def get_session_info(self, user_id: str, chat_id: str) -> Optional[Dict[str, Any]]:
+        """Retorna metadados da sessão conversacional atual."""
+        try:
+            pool = await self.get_pool()
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT last_interaction_at, session_count, metadata FROM chat_sessions WHERE user_id = %s AND chat_id = %s",
+                        (user_id, chat_id)
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        return {
+                            "last_interaction_at": row[0].isoformat() if row[0] else None,
+                            "session_count": row[1],
+                            "metadata": row[2] or {},
+                        }
+            return None
+        except Exception as e:
+            logger.warning("Erro ao buscar session_info: %s", e)
+            return None
+
 

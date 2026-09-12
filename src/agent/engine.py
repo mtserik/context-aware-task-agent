@@ -268,11 +268,13 @@ class MaeveAgent:
     Responsabilidade Única: Gerenciar a máquina de estados, roteamento por intenção e execução do modelo.
     """
     def __init__(self, checkpointer=None):
-        fast_model_name = os.getenv("MAEVE_FAST_MODEL", "gpt-4o-mini")
-        smart_model_name = os.getenv("MAEVE_SMART_MODEL", "gpt-4o")
+        fast_model_name = os.getenv("MAEVE_FAST_MODEL", "gpt-5.6-luna")
+        planner_model_name = os.getenv("MAEVE_PLANNER_MODEL", "gpt-5.6-terra")
+        smart_model_name = os.getenv("MAEVE_SMART_MODEL", "claude-3-5-sonnet-20241022")
 
-        # Modelos base multi-provedor (OpenAI / Anthropic)
+        # Modelos base da Hierarquia Cognitiva Tri-Tier (Sonnet Brain, Terra Brain, Luna Executor)
         self.fast_model_base = create_chat_model(fast_model_name, temperature=0, max_tokens=2048)
+        self.planner_model_base = create_chat_model(planner_model_name, temperature=0, max_tokens=2048)
         self.smart_model_base = create_chat_model(smart_model_name, temperature=0, max_tokens=4096)
         self.router_model = create_chat_model(fast_model_name, temperature=0, max_tokens=256)
 
@@ -527,13 +529,28 @@ class MaeveAgent:
                 decision["domain"] = "tasks"
                 decision["reason"] = "Criação de tarefa direcionada para o TickTick (tasks)"
 
-            plan_required = bool(decision.get("plan_required", False))
-            if decision.get("complexity", 1) >= 3 and not is_confirmation:
+            # Hierarquia Cognitiva Tri-Tier:
+            # 1. 'sonnet': Alta complexidade (>=4), síntese do Obsidian/knowledge, raciocínio teórico
+            # 2. 'terra': Domínio 'tasks' (TickTick), planejamento diário, rotina, complexidade intermediária (1 a 3)
+            # 3. 'none': Fast-path (saudações e confirmações curtas de turno anterior)
+            if is_confirmation:
+                brain = "none"
+                plan_required = False
+            elif domain == "knowledge" or decision.get("complexity", 1) >= 4:
+                brain = "sonnet"
                 plan_required = True
+            elif domain == "tasks" or decision.get("complexity", 1) >= 2 or bool(decision.get("plan_required", False)):
+                brain = "terra"
+                plan_required = True
+            else:
+                brain = "none"
+                plan_required = False
+
+            decision["brain"] = brain
             decision["plan_required"] = plan_required
             decision["clarification_needed"] = bool(decision.get("clarification_needed", False))
 
-            print(f"[Router]: Complexidade {decision.get('complexity', 1)} | Domínio: {domain.upper()} (Inércia: {active_domain}) | Plan: {plan_required} | Clarify: {decision['clarification_needed']} -> {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
+            print(f"[Router]: Complexidade {decision.get('complexity', 1)} | Domínio: {domain.upper()} (Inércia: {active_domain}) | Brain: {brain.upper()} | Plan: {plan_required} | Clarify: {decision['clarification_needed']} -> {str(decision.get('model', 'fast')).upper()} ({decision.get('reason', '')})")
 
             new_active_domain = domain if domain in ["tasks", "knowledge", "search", "reminders"] else (active_domain or "general")
 
@@ -541,25 +558,36 @@ class MaeveAgent:
                 "current_intent": domain,
                 "active_domain": new_active_domain,
                 "routing_metadata": decision,
+                "brain": brain,
                 "plan": None,
             }
         except Exception as e:
             print(f"[Router Warning]: Erro no Router: {e}. Defaulting to Fast/General.")
             fallback_domain = "tasks" if has_ticktick else ("knowledge" if (has_obsidian or is_direct_note_creation) else (active_domain or "general"))
+            fallback_brain = "sonnet" if fallback_domain == "knowledge" else ("terra" if fallback_domain == "tasks" else "none")
             return {
                 "current_intent": fallback_domain,
                 "active_domain": fallback_domain,
-                "routing_metadata": {"model": "fast", "complexity": 1, "domain": fallback_domain, "reason": "Fallback due to error", "plan_required": False, "clarification_needed": False},
+                "routing_metadata": {"model": "fast", "complexity": 1, "domain": fallback_domain, "brain": fallback_brain, "reason": "Fallback due to error", "plan_required": fallback_brain != "none", "clarification_needed": False},
+                "brain": fallback_brain,
                 "plan": None,
             }
 
     async def _planner_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Nó de Planejamento Estratégico (Claude Sonnet 5 — Staff Brain).
-        Responsabilidade Única: Raciocinar, conceber, planejar e estruturar a solução
-        sem chamada de ferramentas nem poluição de tokens operacionais.
-        O plano estruturado é repassado ao nó 'call_model' (Luna) para execução física.
+        Nó de Planejamento da Hierarquia Cognitiva Tri-Tier:
+        - Claude Sonnet: Frontier Brain para tarefas de alta complexidade (>=4) e síntese densa do Obsidian Vault.
+        - GPT-5.6 Terra: Operational Brain para planejamento de tarefas do TickTick, rotina e operações do dia a dia.
+        O plano estruturado gerado é repassado ao nó 'call_model' (Luna) para execução física das ferramentas.
         """
+        brain = state.get("brain") or (state.get("routing_metadata") or {}).get("brain", "terra")
+        if brain == "sonnet":
+            planner_model = self.smart_model_base
+            brain_name = "Sonnet (Frontier Brain)"
+        else:
+            planner_model = self.planner_model_base
+            brain_name = "Terra (Operational Brain)"
+
         messages = state.get("messages", [])
         final_messages = _sanitize_message_history(messages, limit=20)
         user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
@@ -574,15 +602,17 @@ class MaeveAgent:
         ])
 
         temporal = _resolve_temporal_context()
+        session_context = state.get("session_context")
         static_prompt, dynamic_prompt = get_planner_prompt_parts(
             obsidian_context=context_str or "[Nenhuma nota prévia diretamente relacionada]",
+            session_context=session_context,
             **temporal,
         )
 
         is_anthropic = (
-            (isinstance(self.smart_model_base, ChatAnthropic) if _ANTHROPIC_AVAILABLE else False)
-            or "claude" in getattr(self.smart_model_base, "model_name", "").lower()
-            or "claude" in getattr(self.smart_model_base, "model", "").lower()
+            (isinstance(planner_model, ChatAnthropic) if _ANTHROPIC_AVAILABLE else False)
+            or "claude" in getattr(planner_model, "model_name", "").lower()
+            or "claude" in getattr(planner_model, "model", "").lower()
         )
 
         if is_anthropic:
@@ -609,13 +639,13 @@ class MaeveAgent:
         prompt_messages = [system_message] + history
 
         try:
-            logger.info("🧠 [Planner Node]: Invocando Cérebro Estratégico (Sonnet)...")
-            response = await self.smart_model_base.ainvoke(prompt_messages)
+            logger.info("🧠 [Planner Node]: Invocando Cérebro %s...", brain_name)
+            response = await planner_model.ainvoke(prompt_messages)
             plan_text = extract_text_from_message(response).strip()
-            logger.info("✅ [Planner Node]: Plano estratégico gerado com sucesso (%d caracteres).", len(plan_text))
+            logger.info("✅ [Planner Node]: Plano gerado com sucesso pelo %s (%d caracteres).", brain_name, len(plan_text))
             return {"plan": plan_text}
         except Exception as e:
-            logger.error("❌ Erro no Planner Node: %s. Prosseguindo sem plano prévio...", e)
+            logger.error("❌ Erro no Planner Node (%s): %s. Prosseguindo sem plano prévio...", brain_name, e)
             return {"plan": None}
 
     async def _call_model_node(self, state: AgentState) -> Dict[str, Any]:
@@ -704,6 +734,7 @@ class MaeveAgent:
             user_id=user_id,
             chat_id=chat_id,
             obsidian_context=context_str,
+            session_context=state.get("session_context"),
             **temporal,
         )
 
@@ -780,21 +811,27 @@ class MaeveAgent:
                 return {"messages": [await base_model.ainvoke([system_message] + fallback_history)]}
             raise e
 
-    async def run_stream(self, user_input: Any, thread_id: str = "default-thread"):
+    async def run_stream(self, user_input: Any, thread_id: str = "default-thread", session_context: Optional[str] = None):
         """Retorna stream de eventos para visualização e feedback no Telegram."""
         recursion_limit = int(os.getenv("MAEVE_RECURSION_LIMIT", "100"))
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}
         input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
+        input_state: Dict[str, Any] = {"messages": [input_msg]}
+        if session_context:
+            input_state["session_context"] = session_context
 
-        async for event in self._graph.astream_events({"messages": [input_msg]}, config=config, version="v2"):
+        async for event in self._graph.astream_events(input_state, config=config, version="v2"):
             yield event
 
-    async def run(self, user_input: Any, thread_id: str = "default-thread") -> str:
+    async def run(self, user_input: Any, thread_id: str = "default-thread", session_context: Optional[str] = None) -> str:
         """Execução direta assíncrona retornando a resposta em texto."""
         recursion_limit = int(os.getenv("MAEVE_RECURSION_LIMIT", "100"))
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}
         input_msg = user_input if not isinstance(user_input, str) else ("user", user_input)
-        result = await self._graph.ainvoke({"messages": [input_msg]}, config=config)
+        input_state: Dict[str, Any] = {"messages": [input_msg]}
+        if session_context:
+            input_state["session_context"] = session_context
+        result = await self._graph.ainvoke(input_state, config=config)
         for m in reversed(result.get("messages", [])):
             txt = extract_text_from_message(m)
             if txt:

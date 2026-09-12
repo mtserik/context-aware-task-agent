@@ -2,6 +2,8 @@ from typing import List, Dict, Any
 from langchain_core.tools import BaseTool
 
 from src.agent.tools.task_tools import (
+    complete_ticktick_task,
+    reschedule_ticktick_task,
     create_ticktick_task,
     batch_update_ticktick_tasks,
     create_ticktick_project,

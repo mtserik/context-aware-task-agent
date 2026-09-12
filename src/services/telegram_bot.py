@@ -317,12 +317,26 @@ class TelegramService:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         
         try:
-            from src.services.registry import get_maeve_agent
+            from src.services.registry import get_maeve_agent, get_database_service
             from src.agent.engine import extract_text_from_message
+            from src.domain.session import SessionDomainService
+
             maeve = self.maeve or get_maeve_agent()
             if not maeve:
                 await update.message.reply_text("O motor da Maeve está aquecendo. Tente novamente em alguns segundos.")
                 return
+
+            # Verificação de fronteira de sessão conversacional (> 2h de inatividade ou novo dia civil)
+            session_context = None
+            try:
+                db_service = get_database_service()
+                is_new_session = await db_service.check_and_update_session(user_id, chat_id, threshold_seconds=7200)
+                if is_new_session:
+                    logging.info(f"✨ [Telegram Bot]: Nova sessão detectada para usuário {user_id}. Injetando contexto operacional...")
+                    session_service = SessionDomainService()
+                    session_context = await session_service.build_session_context_block(user_id=user_id)
+            except Exception as session_err:
+                logging.warning(f"Erro ao verificar/construir contexto de sessão: {session_err}")
 
             from langchain_core.messages import HumanMessage
             msg = HumanMessage(content=text, additional_kwargs={"user_id": user_id, "chat_id": chat_id})
@@ -331,7 +345,7 @@ class TelegramService:
             final_response = ""
 
             # 1. Consome os eventos do agente
-            async for event in maeve.run_stream(msg, thread_id=thread_id):
+            async for event in maeve.run_stream(msg, thread_id=thread_id, session_context=session_context):
                 kind = event.get("event")
                 tags = event.get("tags", [])
 
