@@ -72,7 +72,7 @@ def register_memory_tools(mcp: FastMCP) -> None:
     async def memory_store(
         title: Annotated[str, "Titulo da nota (sera usado como nome do arquivo .md)"],
         content: Annotated[str, "Conteudo da nota em Markdown estruturado com LaTeX para matematica"],
-        folder: Annotated[str, "Pasta destino no Vault (ex: '00 - Inbox/Maeve', '02 - Projects', '03 - Decisions')"] = "00 - Inbox/Maeve",
+        folder: Annotated[str, "Pasta destino no Vault (ex: 'Inbox', 'Projetos', 'Decisoes')"] = "Inbox",
         category: Annotated[Optional[str], "Categoria da nota ('projeto', 'decisao', 'reuniao', 'conceito', 'brainstorming')"] = "projeto",
         tags: Annotated[Optional[str], "Tags separadas por virgula (ex: 'maeve, arquitetura, mcp')"] = None,
     ) -> str:
@@ -107,7 +107,7 @@ def register_memory_tools(mcp: FastMCP) -> None:
         name="append_session_note",
         description=(
             "Anexa uma síntese estruturada de reunião, conversa, projeto ou brainstorming "
-            "na Daily Note do dia (ex: '01 - Daily/YYYY-MM-DD.md') com timestamp e tags. "
+            "na Daily Note do dia (ex: 'Diário/YYYY-MM-DD.md') com timestamp e tags. "
             "Garante o princípio anti-bagunça da Maeve (Append-First), evitando fragmentação "
             "do Vault em dezenas de micro-arquivos avulsos. "
             "Executa Write-Through imediato no Qdrant para refletir o conteúdo atualizado na memória vetorial."

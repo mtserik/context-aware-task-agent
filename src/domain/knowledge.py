@@ -90,7 +90,7 @@ class KnowledgeDomainService:
     ) -> KnowledgeResult:
         """
         Anexa uma síntese estruturada de reunião, conversa, projeto ou brainstorming na Daily Note
-        do dia (ex: '01 - Daily/YYYY-MM-DD.md').
+        do dia (ex: 'Diário/YYYY-MM-DD.md').
         Garante o padrão anti-bagunça (Append-First), evitando fragmentação em micro-arquivos avulsos.
         Executa Write-Through no Qdrant para refletir o conteúdo atualizado em tempo real.
         """
@@ -100,7 +100,7 @@ class KnowledgeDomainService:
             today_date = date_str or now_sp.strftime("%Y-%m-%d")
             time_str = now_sp.strftime("%H:%M")
 
-            relative_path = f"01 - Daily/{today_date}.md"
+            relative_path = f"Diário/{today_date}.md"
             session_title = title or "Sessão & Insights"
 
             tag_list = list(tags) if tags else []
@@ -130,7 +130,7 @@ class KnowledgeDomainService:
                         "source": "obsidian",
                         "path": relative_path,
                         "title": f"Daily Note {today_date}",
-                        "folder": "01 - Daily",
+                        "folder": "Diário",
                         "date": today_date
                     }
                     await self.vector_db.upsert_documents(

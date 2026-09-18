@@ -368,7 +368,7 @@ def test_telegram_semantic_chunking_and_boundary_healing():
 def test_knowledge_domain_write_through_qdrant():
     """Valida se o KnowledgeDomainService executa o Write-Through imediato no Qdrant ao criar nota."""
     mock_obsidian = MagicMock()
-    mock_obsidian.write_note_with_frontmatter = AsyncMock(return_value="02 - Projects/Maeve.md")
+    mock_obsidian.write_note_with_frontmatter = AsyncMock(return_value="Projetos/Maeve.md")
     mock_vdb = MagicMock()
     mock_vdb.upsert_documents = AsyncMock()
 
@@ -376,12 +376,12 @@ def test_knowledge_domain_write_through_qdrant():
     result = asyncio.run(svc.create_note(
         title="Maeve",
         content="# Arquitetura",
-        folder="02 - Projects",
+        folder="Projetos",
         frontmatter={"author": "maeve", "category": "projeto"}
     ))
 
     assert result.success is True
-    assert result.path == "02 - Projects/Maeve.md"
+    assert result.path == "Projetos/Maeve.md"
     mock_obsidian.write_note_with_frontmatter.assert_called_once()
     mock_vdb.upsert_documents.assert_called_once()
     print("[OK] test_knowledge_domain_write_through_qdrant PASSOU")
@@ -390,7 +390,7 @@ def test_knowledge_domain_write_through_qdrant():
 def test_knowledge_domain_append_to_daily_note():
     """Valida se o padrão Append-First anexa à Daily Note com tags e reindexa no Qdrant."""
     mock_obsidian = MagicMock()
-    mock_obsidian.append_note = AsyncMock(return_value="01 - Daily/2026-09-10.md")
+    mock_obsidian.append_note = AsyncMock(return_value="Diário/2026-09-10.md")
     mock_obsidian.get_note_content = AsyncMock(return_value="Conteúdo atualizado do dia")
     mock_obsidian.vault_path = "/vault"
     mock_vdb = MagicMock()
@@ -406,7 +406,7 @@ def test_knowledge_domain_append_to_daily_note():
     ))
 
     assert result.success is True
-    assert "01 - Daily/2026-09-10.md" in result.path
+    assert "Diário/2026-09-10.md" in result.path
     mock_obsidian.append_note.assert_called_once()
     mock_vdb.upsert_documents.assert_called_once()
     print("[OK] test_knowledge_domain_append_to_daily_note PASSOU")
