@@ -95,10 +95,12 @@ class ObsidianService:
 
     def _run_git_sync(self, args: List[str]):
         """Executa um comando git no diretório do vault de forma síncrona."""
+        if not os.path.exists(self.vault_path):
+            raise FileNotFoundError(f"Diretório do vault não encontrado: {self.vault_path}")
         try:
             result = subprocess.run(
                 ["git"] + args,
-                cwd=self.vault_path if os.path.exists(os.path.join(self.vault_path, ".git")) else None,
+                cwd=self.vault_path,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -217,6 +219,10 @@ class ObsidianService:
         Faz o commit e push das alterações locais, garantindo sincronia com o remoto.
         Implementa lógica de rebase e resolução de conflitos simples.
         """
+        if not os.path.exists(os.path.join(self.vault_path, ".git")):
+            print(f"Aviso: Vault em '{self.vault_path}' não é um repositório Git. Pulando push Git.")
+            return
+
         try:
             # 1. Garante que a branch local está alinhada para 'main'
             branch = await self._ensure_branch()
