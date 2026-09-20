@@ -22,6 +22,8 @@ _search_service: Optional["SearchService"] = None
 _telegram_service: Optional["TelegramService"] = None
 _profile_service: Optional["UserProfileService"] = None
 _journal_service: Optional["JournalService"] = None
+_culture_service: Optional["CultureService"] = None
+_book_domain_service: Optional["BookDomainService"] = None
 _maeve_agent: Optional["MaeveAgent"] = None
 
 def get_obsidian_service() -> "ObsidianService":
