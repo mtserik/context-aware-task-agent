@@ -365,9 +365,10 @@ class PDFBookParser(BaseBookParser):
         return text
 
     def _clean_title(self, raw_title: str) -> str:
-        """Limpa hashes, extensões e ruídos do título do livro."""
-        clean = re.sub(r'[-_][a-z0-9]{5,10}$', '', raw_title)  # remove hashes como -lyfxjj
-        clean = re.sub(r'\.pdf$', '', clean, flags=re.IGNORECASE)
+        """Limpa hashes, extensões, versões e ruídos do título do livro."""
+        clean = re.sub(r'\.pdf$', '', raw_title, flags=re.IGNORECASE)
+        clean = re.sub(r'[-_][a-z0-9]{5,10}$', '', clean)  # remove hashes como -lyfxjj
+        clean = re.sub(r'[-_]?v\d+([-_.]\d+)*$', '', clean, flags=re.IGNORECASE)  # remove versões como -v1-3, v1.3
         clean = re.sub(r'[\r\n\t]+', ' ', clean)
         clean = re.sub(r'[:/\\?*|"<>]', ' - ', clean)
         clean = clean.replace("-", " ").replace("_", " ").strip()
@@ -377,7 +378,7 @@ class PDFBookParser(BaseBookParser):
             low = w.lower()
             if low in ["rpg", "rn", "imecc", "pdf", "d&d"]:
                 formatted.append(low.upper())
-            elif low in ["de", "da", "do", "das", "dos", "em", "no", "na", "nos", "nas", "e"]:
+            elif low in ["de", "da", "do", "das", "dos", "em", "no", "na", "nos", "nas", "e", "ao", "aos", "para"]:
                 formatted.append(low)
             else:
                 formatted.append(w.capitalize())
