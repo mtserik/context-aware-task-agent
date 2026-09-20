@@ -14,8 +14,9 @@ logger = logging.getLogger("SurgicalBookPolisher")
 SURGICAL_SYSTEM_PROMPT = """Você é um assistente cirúrgico de formatação de Markdown para o Obsidian Vault.
 Sua missão é transformar o bloco de texto fornecido em Markdown elegante, profissional e bem estruturado:
 
-1. TABELAS: Se houver dados tabulares (ex: listas de armas, estatísticas, perícias, valores numéricos em colunas), converta-os em tabelas GFM válidas (| Coluna 1 | Coluna 2 |).
-2. CALLOUTS: Se houver avisos, regras especiais, dicas do mestre, exercícios práticos ou exemplos, formate-os usando a sintaxe de Callout do Obsidian (> [!NOTE], > [!TIP], > [!DANGER], > [!EXAMPLE]).
+1. TABELAS: Se houver dados tabulares (ex: listas de itens, tabelas de patentes, estatísticas, perícias, valores numéricos em colunas), converta-os em tabelas GFM válidas (| Coluna 1 | Coluna 2 |).
+2. CALLOUTS: Se houver avisos, regras especiais, dicas do mestre ou exercícios práticos, formate-os usando a sintaxe de Callout do Obsidian (> [!NOTE], > [!TIP], > [!EXAMPLE]).
+   - REGRA MANDATÓRIA DE CALLOUTS: NUNCA crie Callouts para parágrafos comuns de narrativa, capítulos, sumários, erratas ou explicações. Apenas use Callout se o texto original for explicitamente um quadro, aviso ou nota destacada do texto principal.
 3. MATEMÁTICA: Se houver fórmulas científicas ou equações com notação LaTeX, envolva-as em MathJax ($...$ em linha ou $$...$$ em bloco).
 4. REGRA MANDATÓRIA (LOSSLESS FORMATTING):
    - NUNCA resuma, NUNCA omita e NUNCA altere nenhuma palavra, número, nome ou regra.
@@ -58,24 +59,35 @@ class SurgicalBookPolisher:
         if text.startswith("> [!") or (text.startswith("|") and text.endswith("|")):
             return False
 
-        # 2. Detecção de dados tabulares não formatados:
-        # Linhas consecutivas com números/stats separados por múltiplos espaços
         lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if not lines:
+            return False
+
+        # Ignora índices e sumários com linhas pontilhadas (ex: Capítulo 1 .......... 10)
+        if any(re.search(r'\.{3,}\s*\d+', l) for l in lines):
+            return False
+
+        first_line_lower = lines[0].lower()
+
+        # 2. Detecção explícita de início de tabela
+        if any(first_line_lower.startswith(k) for k in ["tabela ", "table ", "tabela:"]):
+            return True
+
+        # 3. Detecção de dados tabulares não formatados:
+        # Linhas consecutivas com números/stats separados por múltiplos espaços ou tabulações
         if len(lines) >= 2:
             tab_like_lines = 0
             for l in lines:
-                # Linha com palavras seguidas de múltiplos espaços e números/dados
-                if re.search(r'[\w\s]{2,20}\s{2,}\d+', l) or "\t" in l:
+                if re.search(r'[\w\s]{2,20}\s{2,}\d+', l) or "\t" in l or re.search(r'\b\d+\s+[\w\s]+\s+[\d—\-]+', l):
                     tab_like_lines += 1
             if tab_like_lines >= 2 and tab_like_lines / len(lines) >= 0.4:
                 return True
 
-        # 3. Detecção de caixas de regras / exercícios / avisos soltos
-        first_line_lower = lines[0].lower() if lines else ""
+        # 4. Detecção de caixas de regras / exercícios / avisos soltos
         if any(first_line_lower.startswith(k) for k in [
             "quadro", "exercício", "exercicio", "meditação", "meditacao",
-            "dica do mestre", "dica de mestre", "regra opcional", "ameaça",
-            "atenção", "atencao", "importante", "nota:", "observação:", "observacao:"
+            "dica do mestre", "dica de mestre", "regra opcional",
+            "atenção:", "atencao:", "importante:", "nota:", "observação:", "observacao:"
         ]):
             return True
 

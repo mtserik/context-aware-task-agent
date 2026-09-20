@@ -208,15 +208,15 @@ class PDFBookParser(BaseBookParser):
 
     def _render_rpg_page(self, page: fitz.Page) -> str:
         """
-        Renderiza página de RPG preservando fluxo bicolunar e convertendo caixas em callouts.
+        Renderiza página de RPG preservando fluxo bicolunar e faixas horizontais de largura completa.
+        Reconstrói a ordem de leitura geométrica para manter tabelas e títulos contíguos aos seus dados.
         """
         page_width = page.rect.width
         blocks = page.get_text("blocks")
 
-        # Separação e ordenação por colunas (Coluna 1 antes de Coluna 2)
         col1_blocks = []
         col2_blocks = []
-        full_width_blocks = []
+        spanning_blocks = []
 
         for b in blocks:
             if len(b) >= 7 and b[6] == 0:  # Bloco de texto
@@ -224,24 +224,35 @@ class PDFBookParser(BaseBookParser):
                 if not text:
                     continue
 
-                # Cabeçalho / Rodapé ou Banner de página inteira
-                if (x1 - x0) > (page_width * 0.7):
-                    full_width_blocks.append((y0, text))
+                # Bloco que cruza a linha média ou banner largo (>60% da largura da página)
+                if (x0 < page_width * 0.45 and x1 > page_width * 0.55) or ((x1 - x0) > page_width * 0.60):
+                    spanning_blocks.append((y0, y1, text))
                 elif x1 <= page_width * 0.55:
-                    col1_blocks.append((y0, text))
+                    col1_blocks.append((y0, y1, text))
                 else:
-                    col2_blocks.append((y0, text))
+                    col2_blocks.append((y0, y1, text))
 
-        full_width_blocks.sort(key=lambda item: item[0])
-        col1_blocks.sort(key=lambda item: item[0])
-        col2_blocks.sort(key=lambda item: item[0])
+        spanning_blocks.sort(key=lambda s: s[0])
+        col1_blocks.sort(key=lambda c: c[0])
+        col2_blocks.sort(key=lambda c: c[0])
 
-        all_texts = [b[1] for b in full_width_blocks if b[0] < 100]  # top banners
-        all_texts.extend([b[1] for b in col1_blocks])
-        all_texts.extend([b[1] for b in col2_blocks])
-        all_texts.extend([b[1] for b in full_width_blocks if b[0] >= 100])  # bottom banners
+        if not spanning_blocks:
+            all_texts = [c[2] for c in col1_blocks] + [c[2] for c in col2_blocks]
+        else:
+            all_texts = []
+            current_y = 0.0
+            for s_y0, s_y1, s_text in spanning_blocks:
+                c1_band = [c[2] for c in col1_blocks if current_y <= c[0] < s_y0]
+                c2_band = [c[2] for c in col2_blocks if current_y <= c[0] < s_y0]
+                all_texts.extend(c1_band)
+                all_texts.extend(c2_band)
+                all_texts.append(s_text)
+                current_y = max(current_y, s_y1)
 
-        # Conversão de caixas de regras para callouts
+            all_texts.extend([c[2] for c in col1_blocks if c[0] >= current_y])
+            all_texts.extend([c[2] for c in col2_blocks if c[0] >= current_y])
+
+        # Conversão de caixas de regras para callouts e limpeza
         formatted_blocks = []
         for block in all_texts:
             cleaned = self._clean_text(block)
@@ -293,13 +304,17 @@ class PDFBookParser(BaseBookParser):
 
     def _format_rpg_callout(self, text: str) -> str:
         """Detecta avisos e caixas de regras de RPG e transforma em callouts do Obsidian."""
-        lower = text.lower()
-        if any(h in lower for h in ["dica do mestre", "dica de mestre"]):
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if not lines:
+            return text
+        first_line_lower = lines[0].lower()
+
+        if any(first_line_lower.startswith(h) for h in ["dica do mestre", "dica de mestre"]):
             return f"> [!TIP] Dica do Mestre\n> " + text.replace("\n", "\n> ")
-        elif any(h in lower for h in ["regra opcional", "regra avançada"]):
+        elif any(first_line_lower.startswith(h) for h in ["regra opcional", "regra avançada"]):
             return f"> [!NOTE] Regra Opcional\n> " + text.replace("\n", "\n> ")
-        elif any(h in lower for h in ["ameaça", "perigo", "presença perturbadora"]):
-            return f"> [!DANGER] Alerta de Ameaça\n> " + text.replace("\n", "\n> ")
+        elif any(first_line_lower.startswith(h) for h in ["presença perturbadora", "aviso:", "atenção:", "perigo:"]):
+            return f"> [!DANGER] {lines[0].title()}\n> " + text.replace("\n", "\n> ")
         return text
 
     def _clean_title(self, raw_title: str) -> str:
