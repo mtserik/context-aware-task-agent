@@ -10,7 +10,7 @@ from src.services.registry import (
     get_culture_service,
     get_vector_db_service
 )
-from src.services.obsidian import ObsidianService
+from src.services.obsidian import ObsidianService, sanitize_vault_filename
 from src.services.culture import CultureService
 from src.services.vector_db import VectorDBService
 from src.services.book_parser import (
@@ -108,7 +108,7 @@ class BookDomainService:
         else:
             raise ValueError(f"Formato de livro não suportado: '{ext}'. Suportados: .pdf, .epub")
 
-        clean_title = parsed_book.title
+        clean_title = sanitize_vault_filename(parsed_book.title)
         book_dir = f"Recursos/Livros/{clean_title}"
         attachments_dir = f"{book_dir}/attachments"
 
@@ -146,11 +146,14 @@ class BookDomainService:
 
         total_chapters = len(parsed_book.chapters)
         for chap in parsed_book.chapters:
-            chap_filename = f"{chap.order:02d} - {chap.title}.md"
+            safe_chap_title = sanitize_vault_filename(chap.title)
+            chap_filename = f"{chap.order:02d} - {safe_chap_title}.md"
             chap_rel_path = f"{book_dir}/{chap_filename}"
 
-            prev_link = f"[[{chap.order-1:02d} - {parsed_book.chapters[chap.order-2].title}|← Anterior]]" if chap.order > 1 else ""
-            next_link = f"[[{chap.order+1:02d} - {parsed_book.chapters[chap.order].title}|Próximo →]]" if chap.order < total_chapters else ""
+            prev_title = sanitize_vault_filename(parsed_book.chapters[chap.order-2].title) if chap.order > 1 else ""
+            prev_link = f"[[{chap.order-1:02d} - {prev_title}|← Anterior]]" if chap.order > 1 else ""
+            next_title = sanitize_vault_filename(parsed_book.chapters[chap.order].title) if chap.order < total_chapters else ""
+            next_link = f"[[{chap.order+1:02d} - {next_title}|Próximo →]]" if chap.order < total_chapters else ""
             nav_bar = f"\n\n---\n**Navegação:** {prev_link} | [[{clean_title}|Índice do Livro]] | {next_link}\n"
 
             chap_frontmatter = {

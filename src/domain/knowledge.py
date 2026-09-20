@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 
 from src.domain.models import KnowledgeResult
 from src.services.registry import get_obsidian_service, get_vector_db_service
-from src.services.obsidian import ObsidianService
+from src.services.obsidian import ObsidianService, sanitize_vault_filename
 from src.services.vector_db import VectorDBService
 
 class KnowledgeDomainService:
@@ -44,9 +44,10 @@ class KnowledgeDomainService:
         Cria uma nova nota no Vault do Obsidian com versionamento Git e Write-Through imediato no Qdrant.
         """
         try:
-            filename = f"{title}.md" if not title.endswith(".md") else title
+            clean_title = sanitize_vault_filename(title)
+            filename = f"{clean_title}.md" if not clean_title.endswith(".md") else clean_title
             relative_path = os.path.join(folder, filename).replace("\\", "/")
-            commit_msg = f"Maeve: Criou nota '{title}' em {folder}"
+            commit_msg = f"Maeve: Criou nota '{clean_title}' em {folder}"
 
             if frontmatter:
                 await self.obsidian.write_note_with_frontmatter(

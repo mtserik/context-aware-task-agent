@@ -8,6 +8,31 @@ import tempfile
 import shutil
 from typing import List, Dict, Any, Optional
 
+def sanitize_vault_filename(name: str) -> str:
+    """
+    Sanitiza nomes de arquivos e títulos de notas para garantir compatibilidade
+    total entre Linux, macOS e Windows NTFS.
+    Substitui ':' por ' - ', aspas duplas por simples, remove caracteres proibidos (< > | ? *),
+    barras de caminho, e remove espaços ou pontos no final antes da extensão .md.
+    """
+    if not name:
+        return "Sem_Titulo"
+    has_md = name.endswith(".md")
+    t = name[:-3] if has_md else name
+
+    # Substituições compatíveis com NTFS
+    t = t.replace(":", " -")
+    t = t.replace('"', "'")
+    t = t.replace("/", "_").replace("\\", "_")
+    t = re.sub(r'[<>|?*]', '', t)
+
+    # Normalização de espaços e pontuação residual
+    t = re.sub(r'\s+', ' ', t).strip(' .')
+    if not t:
+        t = "Nota"
+
+    return f"{t}.md" if has_md else t
+
 class ObsidianService:
     """
     Serviço responsável pela integração com o Vault do Obsidian via Git.
@@ -399,11 +424,15 @@ class ObsidianService:
         Cria ou atualiza uma nota no vault.
         relative_path: Caminho relativo ao vault (ex: 'Inbox/MinhaNota.md')
         """
-        full_path = self._safe_resolve(relative_path)
+        folder, filename = os.path.split(relative_path)
+        clean_filename = sanitize_vault_filename(filename)
+        clean_relative_path = os.path.join(folder, clean_filename).replace("\\", "/") if folder else clean_filename
+
+        full_path = self._safe_resolve(clean_relative_path)
         
         # Proteção contra diretórios
         if os.path.isdir(full_path):
-            raise Exception(f"Erro: '{relative_path}' é um diretório, não um arquivo.")
+            raise Exception(f"Erro: '{clean_relative_path}' é um diretório, não um arquivo.")
 
         # Garante que o diretório existe
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -430,9 +459,13 @@ class ObsidianService:
         """
         Grava um arquivo binário (imagens, capas, anexos) no vault.
         """
-        full_path = self._safe_resolve(relative_path)
+        folder, filename = os.path.split(relative_path)
+        clean_filename = sanitize_vault_filename(filename)
+        clean_relative_path = os.path.join(folder, clean_filename).replace("\\", "/") if folder else clean_filename
+
+        full_path = self._safe_resolve(clean_relative_path)
         if os.path.isdir(full_path):
-            raise Exception(f"Erro: '{relative_path}' é um diretório, não um arquivo.")
+            raise Exception(f"Erro: '{clean_relative_path}' é um diretório, não um arquivo.")
 
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, "wb") as f:

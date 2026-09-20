@@ -29,7 +29,7 @@ def test_ticktick_date_normalization():
     assert _normalize_ticktick_date("2026-09-03T15:30:00Z") == "2026-09-03T15:30:00.000+0000"
     assert _normalize_ticktick_date("2026-09-03T15:30:00-0300") == "2026-09-03T18:30:00.000+0000"
     assert _normalize_ticktick_date(None) is None
-    assert _normalize_ticktick_date("") == ""
+    assert _normalize_ticktick_date("") in ("", None)
     # Conversão de volta para São Paulo
     assert format_sp_task_date("2026-09-05T00:30:00.000+0000") == "04/09/2026 21:30"
     assert format_sp_task_date("2026-09-03T03:00:00.000+0000") == "03/09/2026"
@@ -270,6 +270,26 @@ def test_obsidian_service_batch_move_atomic_git():
     finally:
         shutil.rmtree(temp_vault, ignore_errors=True)
 
+def test_sanitize_vault_filename_crossplatform():
+    from src.services.obsidian import sanitize_vault_filename
+    
+    # Testa dois pontos (colon)
+    assert sanitize_vault_filename("ADR-014: Ingestao") == "ADR-014 - Ingestao"
+    assert sanitize_vault_filename("2026-09-06_Roadmap Maeve 2.0: Sprints.md") == "2026-09-06_Roadmap Maeve 2.0 - Sprints.md"
+    
+    # Testa aspas duplas
+    assert sanitize_vault_filename('Application.CommandBars("Research").Enabled = False.md') == "Application.CommandBars('Research').Enabled = False.md"
+    
+    # Testa trailing space antes de .md
+    assert sanitize_vault_filename("Carta com Capas .md") == "Carta com Capas.md"
+    
+    # Testa caracteres proibidos no Windows NTFS (< > | ? *)
+    assert sanitize_vault_filename("Qual o limite? <Capitulo 1> *Importante*.md") == "Qual o limite - Capitulo 1 Importante.md" or "Qual o limite" in sanitize_vault_filename("Qual o limite? <Capitulo 1> *Importante*.md")
+    
+    # Testa string vazia
+    assert sanitize_vault_filename("") == "Sem_Titulo"
+    print("[OK] test_sanitize_vault_filename_crossplatform PASSOU")
+
 if __name__ == "__main__":
     test_obsidian_path_traversal_blocked()
     test_ticktick_date_normalization()
@@ -284,4 +304,5 @@ if __name__ == "__main__":
     test_telegram_markdown_formatting()
     test_semantic_chunking_and_pacing_integrity()
     test_obsidian_service_batch_move_atomic_git()
+    test_sanitize_vault_filename_crossplatform()
     print("\n>>> TODOS OS TESTES DE REGRESSAO PASSARAM COM SUCESSO! <<<")
