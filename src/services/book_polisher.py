@@ -73,9 +73,9 @@ class SurgicalBookPolisher:
         # 3. Detecção de caixas de regras / exercícios / avisos soltos
         first_line_lower = lines[0].lower() if lines else ""
         if any(first_line_lower.startswith(k) for k in [
-            "quadro:", "exercício:", "exercicio:", "meditação:", "meditacao:",
-            "dica do mestre:", "dica de mestre:", "regra opcional:", "ameaça:",
-            "atenção:", "atencao:", "importante:", "nota:", "observação:"
+            "quadro", "exercício", "exercicio", "meditação", "meditacao",
+            "dica do mestre", "dica de mestre", "regra opcional", "ameaça",
+            "atenção", "atencao", "importante", "nota:", "observação:", "observacao:"
         ]):
             return True
 

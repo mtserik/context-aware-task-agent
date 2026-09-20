@@ -150,6 +150,16 @@ class EPUBBookParser(BaseBookParser):
             if any(p in lower_chap for p in ["dados de copyright", "lelivros", "sobre nós", "ficha catalográfica"]):
                 continue
 
+            # Converte caixas de destaque, avisos e sidebars em callouts para o Obsidian
+            for box in soup.find_all(["aside", "div"], class_=lambda c: c and any(k in str(c).lower() for k in ["sidebar", "box", "quadro", "callout", "destaque", "textbox"])):
+                box.name = "blockquote"
+                title_tag = box.find(class_=lambda c: c and "title" in str(c).lower()) or box.find(["h1", "h2", "h3", "h4", "h5"])
+                if title_tag:
+                    t_text = title_tag.get_text().strip()
+                    new_p = soup.new_tag("p")
+                    new_p.string = f"[!NOTE] {t_text}"
+                    title_tag.replace_with(new_p)
+
             # Converte HTML para Markdown limpo
             md_content = markdownify.markdownify(
                 str(soup),
