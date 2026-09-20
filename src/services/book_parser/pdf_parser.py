@@ -240,8 +240,10 @@ class PDFBookParser(BaseBookParser):
         # Conversão de caixas de regras para callouts
         formatted_blocks = []
         for block in all_texts:
-            clean_block = self._format_rpg_callout(block)
-            formatted_blocks.append(clean_block)
+            cleaned = self._clean_text(block)
+            if cleaned.strip():
+                clean_block = self._format_rpg_callout(cleaned)
+                formatted_blocks.append(clean_block)
 
         return "\n\n".join(formatted_blocks)
 
@@ -249,7 +251,7 @@ class PDFBookParser(BaseBookParser):
         """
         Renderiza página de matemática preservando teoremas e equações.
         """
-        raw_text = page.get_text("text")
+        raw_text = self._clean_text(page.get_text("text"))
         # Converte padrões de teoremas e provas para callouts
         formatted = re.sub(
             r'^(Teorema\s+[\d\.]+:?.*?)$',
@@ -273,7 +275,17 @@ class PDFBookParser(BaseBookParser):
 
     def _render_general_page(self, page: fitz.Page) -> str:
         """Renderiza página de literatura / negócios em fluxo mono-colunar limpo."""
-        return page.get_text("text")
+        return self._clean_text(page.get_text("text"))
+
+    def _clean_text(self, text: str) -> str:
+        """Remove marcas d'água de compra digital (ex: nome e email do comprador)."""
+        lines = []
+        for line in text.splitlines():
+            # Linha com email de comprador (ex: 'Erik Martins erik.stos.mts@gmail.com')
+            if re.search(r'[\w\.-]+@[\w\.-]+\.\w+', line) and len(line.strip()) < 80:
+                continue
+            lines.append(line)
+        return "\n".join(lines)
 
     def _format_rpg_callout(self, text: str) -> str:
         """Detecta avisos e caixas de regras de RPG e transforma em callouts do Obsidian."""
