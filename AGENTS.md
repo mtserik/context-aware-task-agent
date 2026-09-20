@@ -518,6 +518,13 @@ Executa o servidor localmente via processo subprocess (ideal para desenvolviment
 - [ ] Testes de regressão: `src/test/test_mcp_smoke.py` cobrindo ferramentas P0.
 - [ ] Documentação de uso no README (seção "Usando a Maeve no Antigravity via MCP").
 
+#### Fase 5: Pipeline Assíncrono de Ingestão de Livros & RAG Semântico de Alta Densidade (Planejamento ⏳)
+- [ ] **Motores de Extração Determinística Zero-Token:** Integração de `pymupdf4llm` para conversão estruturada de PDFs digitais e `ebooklib` + `markdownify` para EPUBs em CPU local no contêiner Docker.
+- [ ] **Heurísticas Algorítmicas de Limpeza:** Poda geométrica de running headers/footers ($y < 40$, $y > 750$) e des-hifenização de quebras de linha (`\w+-\n\w+`).
+- [ ] **Modelagem MOC no Obsidian:** Geração da pasta `Recursos/Livros/{Título}/` com nota Hub MOC e capítulos atômicos `.md`, vinculando capas HD da OpenLibrary/Wikipedia via `CultureService`.
+- [ ] **Tokenização & Chunking Sintático:** Segmentação com `tiktoken` (`cl100k_base`) respeitando fronteiras sintáticas do Markdown (janelas de 500 a 800 tokens com overlap de 50 tokens) e metadados granulares no Qdrant.
+- [ ] **Ingestão Assíncrona Multicanal:** Suporte a upload via Telegram Bot e ingestão remota via Antigravity (endpoint `/api/books/ingest` e tool MCP `ingest_book`) com worker de background não-bloqueante e notificação proativa de conclusão.
+
 ---
 
 ## 7. Status das Melhorias Estruturais & Pré-Requisitos
@@ -921,3 +928,121 @@ Greet Erik, acknowledge the current structural status of the project, and guide 
 
 #### 5. Verificação & Qualidade
 - Suíte completa de testes automatizados `src/test/test_tri_tier_ticktick_session.py` (19/19 testes aprovados em 0.03s), cobrindo Smart Task Resolution, normalização UTC, operações de domínio, detecção de fronteira de sessão e roteamento cognitivo Tri-Tier.
+
+---
+
+### 9.11 Sprint 20 (Planejamento Técnico Completo): Pipeline Assíncrono de Ingestão & Tokenização de Livros (Zero-Token PDF/EPUB -> Obsidian MOC & Qdrant RAG) (2026-09-20)
+
+> **Objetivo:** Estabelecer a infraestrutura de ingestão e tokenização em larga escala de literatura técnica e livros (PDF e EPUB) diretamente no Obsidian Vault e Qdrant Vector DB, operando sob o **Zero-Token Ingestion Invariant** (custo zero de LLM para extração/estruturação), com processamento assíncrono em paralelo no Docker/Railway, perfilador heurístico de modo (Matemática, RPG e Narrativa), filtro inteligente de imagens anti-ruído, e suporte dual via Telegram Bot e Antigravity (MCP/REST).
+
+#### 1. Princípios Arquiteturais & Rigor de Engenharia (Staff Persona)
+1. **Zero-Token Ingestion Invariant & Custo Zero Generativo:**
+   - Proibição absoluta de utilizar LLMs generativos (Claude, GPT, Gemini) para transcrever, resumir ou estruturar texto de livros em PDF/EPUB.
+   - Todo o parsing, detecção de capítulos, extração de imagens e conversão para Markdown roda deterministicamente em CPU/C++ usando motores locais (`PyMuPDF` / `pymupdf4llm` / `ebooklib`).
+   - Custo generativo = **$0,00**. O único custo financeiro é o embedding matemático via `text-embedding-3-small` no Qdrant (~$0,004 para um livro de 400 páginas / ~200k tokens).
+2. **Modelagem de Conhecimento no Obsidian (Padrão MOC - Map of Content):**
+   - Proibido o despejo de livros em arquivos monolíticos gigantescos (evita degradação de renderização e perda de granularidade de links).
+   - Pasta dedicada no Vault: `Recursos/Livros/{Título da Obra}/`.
+   - Subpasta de anexos: `Recursos/Livros/{Título da Obra}/attachments/`.
+   - **Nota MOC / Hub (`{Título da Obra}.md`):**
+     - Frontmatter YAML canônico (`tipo: livro`, `autor`, `ano`, `isbn`, `modo`, `status`, tags).
+     - Capa em alta definição (OpenLibrary / Wikipedia via `CultureService` ou `attachments/cover.png`).
+     - Sumário estruturado com links bidirecionais para cada capítulo (`[[01 - Introdução]]`, `[[02 - Capítulo 1]]`).
+     - Seções de ancoragem para reflexão pessoal: `## 💡 Principais Aprendizados & Modelos Mentais do Erik`.
+   - **Notas Atômicas de Capítulos (`{ordem} - {Nome do Capítulo}.md`):**
+     - Texto integral em Markdown estruturado, tabelas GFM, fórmulas em LaTeX MathJax (`$...$` e `$$...$$`) e ilustrações embutidas (`![[attachments/imagem.png]]`).
+   - **Git Atomic Commit & Push Único:** Todas as notas e imagens do livro são gravadas em disco e consolidadas em **um único** `git commit` e `git push origin HEAD:main`, eliminando conflitos de lock e overhead de rede.
+3. **Tokenização Sintática & Semantic Chunking para RAG:**
+   - **Contagem Estrita com `tiktoken`:** Tokenizer `cl100k_base` para quantificação precisa de tokens.
+   - **Markdown-Aware Semantic Chunking:**
+     - Respeita a árvore sintática do Markdown: não quebra blocos de código, tabelas ou fórmulas matemáticas (`$$...$$`) no meio.
+     - Janela calibrada: 500 a 800 tokens com overlap semântico de 50 a 100 tokens entre blocos consecutivos.
+   - **Payload Estruturado no Qdrant:**
+     - Metadados: `{"book_title": str, "author": str, "chapter": str, "mode": str, "chunk_index": int, "total_chunks": int, "path": str, "source": "book"}`.
+     - Point IDs determinísticos e idempotentes via `uuid5(NAMESPACE_URL, f"{path}:{chunk_index}")`.
+
+#### 2. Classificador Heurístico de Modo (Zero-Token Profiler)
+Para processar com fidelidade livros de naturezas radicalmente distintas (ex: *Análise no Rn* vs. *Ordem Paranormal RPG* vs. *Ficção/Negócios*), o pipeline executa um classificador determinístico (< 100 ms) em 3 camadas:
+1. **Camada 0 (Contextual / Path Hint):**
+   - Diretórios `.../RPGs/...` ou tag `mode="rpg"` $\to$ força Modo RPG.
+   - Diretórios `.../Estudos/IMECC/...` ou tag `mode="math"` $\to$ força Modo Matemática.
+2. **Camada 1 (Lexical Outlines Scanner):**
+   - Inspeciona o índice embutido (`toc` / bookmarks) contra léxicos de alta especificidade:
+     - `RPG_SIGNALS`: `{"personagem", "perícias", "atributos", "combate", "ameaças", "bestiário", "rituais", "mestre", "campanha", "sanidade"}`.
+     - `MATH_SIGNALS`: `{"teorema", "demonstração", "lema", "corolário", "definição", "espaços métricos", "cálculo", "álgebra", "integrais"}`.
+3. **Camada 2 (Profiler Físico de 5 Páginas do Miolo):**
+   - **Densidade de Imagens ($\rho_{\text{img}}$):** $\ge 2.5 \implies$ Forte indício de RPG/Revista ilustrada; $\le 0.5 \implies$ Literatura/Matemática.
+   - **Geometria de Bounding Boxes (Multi-colunas):** Detecção de 2+ colunas de texto por página via coordenadas $(x_0, x_1)$, forçando leitura ordenada por coluna no Modo RPG.
+   - **Assinatura Tipográfica de LaTeX:** Detecção de fontes embutidas (`CMSY*`, `CMR*`, `AMS*`, `LatinModern`) e caracteres matemáticos Unicode ($\in, \sum, \int, \nabla, \partial, \mathbb{R}$).
+4. **Comportamento por Modo:**
+   - **Modo RPG:** Ordem de leitura multi-colunar por bounding box, filtro rigoroso de imagens decorativas, conversão de caixas de regras para callouts (`> [!NOTE] Dica do Mestre`, `> [!DANGER] Ameaça`).
+   - **Modo Matemática:** Preservação estrita de MathJax (`$...$` e `$$...$$`), isolamento de teoremas/provas em callouts (`> [!THEOREM]`, `> [!PROOF]`), chunking atômico de equações.
+   - **Modo Narrativo / Geral:** Fluxo contínuo mono-colunar, extração focada em capítulos limpos e citações.
+
+#### 3. Pipeline de Extração de Imagens & Filtro Anti-Ruído Visual (Smart Visual Filter)
+1. **Extração Bruta via PyMuPDF (`fitz`):**
+   - Recupera objetos de imagem (`XObject` tipo `/Image`) sem recompressão com qualidade original.
+2. **Filtro Heurístico Anti-Ruído (Eliminação de "Mil Texturas" em RPGs):**
+   - **Área Mínima:** Descarte automático de imagens com `width < 200` ou `height < 200` ou área total $< 40.000\text{ px}$ (elimina ícones de dados, bullets e pequenas cantoneiras).
+   - **Aspect Ratio Extremo:** Imagens com ratio $> 10:1$ ou $< 1:10$ (réguas divisórias e barras horizontais) são ignoradas.
+   - **Deduplicação Criptográfica por Hash MD5:** Texturas de fundo (papel envelhecido, manchas) e marcas d'água repetidas em dezenas de páginas possuem o mesmo hash binário. São salvas no máximo 1 vez ou filtradas se detectadas como background decorativo.
+3. **Promoção de Capa & Armazenamento:**
+   - A imagem de maior resolução nas primeiras 5 páginas é eleita como `cover.png`.
+   - Imagens aprovadas são gravadas em `Recursos/Livros/{Título}/attachments/` e embutidas no Markdown via `![[attachments/...]]`.
+
+#### 4. Arquitetura de Módulos & Classes a Implementar
+- **`src/services/book_parser/` (Subpacote Especializado):**
+  - `base.py`: Enums (`BookMode`), DTOs (`ParsedImage`, `ParsedChapter`, `ParsedBook`) e interface abstrata `BaseBookParser(ABC)`.
+  - `detector.py`: `BookModeDetector` implementando as 3 camadas de detecção heurística determinística.
+  - `image_extractor.py`: `BookImageExtractor` com o filtro heurístico anti-ruído e deduplicação MD5.
+  - `pdf_parser.py`: `PDFBookParser` integrando `PyMuPDF` (`fitz`) e `pymupdf4llm`, ordenação por coluna, extração de LaTeX e imagens.
+  - `epub_parser.py`: `EPUBBookParser` integrando `ebooklib`, `beautifulsoup4` e `markdownify`.
+- **`src/domain/tokenization.py`:**
+  - `MarkdownSemanticChunker`: Segmentador consciente da sintaxe Markdown com `tiktoken` (`cl100k_base`).
+- **`src/domain/books.py`:**
+  - `BookDomainService`: Orquestrador de domínio de livros: detecção de modo, parsing, enriquecimento com `CultureService`, escrita do MOC e notas no `ObsidianService`, chunking e indexação no `VectorDBService`.
+- **`src/services/book_worker.py`:**
+  - `BookIngestionWorker`: Gerenciador assíncrono de jobs em background com tracking de progresso e callbacks.
+- **`src/api/routes/books.py`:**
+  - Endpoint FastAPI `POST /api/v1/books/upload` com streaming multipart de arquivos locais.
+- **`src/mcp/tools/books.py`:**
+  - Tool MCP `ingest_book(file_path_or_url: str, mode: Optional[str] = "auto")` exportada no catálogo FastMCP.
+- **`src/services/telegram_bot.py`:**
+  - Roteamento inteligente no `handle_document` para acionar o pipeline de livros assíncrono com política estrita de 2 notificações (Start imediato com páginas estimadas + Finish com capa e resumo).
+
+#### 5. Plano de Fases da Sprint 20 & Status de Conclusão
+
+- [x] **Fase 1: Infraestrutura de Dependências, DTOs e Detector Heurístico de Modo**
+  - [x] Atualizar `requirements.txt` com `pymupdf==1.25.3`, `pymupdf4llm==0.0.17`, `ebooklib==0.18`, `beautifulsoup4==4.13.3`, `markdownify==0.14.1`, `pillow==11.1.0`.
+  - [x] Criar `src/services/book_parser/base.py` com DTOs (`ParsedChapter`, `ParsedBook`, `BookMode`).
+  - [x] Implementar `src/services/book_parser/detector.py` (`BookModeDetector` com 3 camadas de scoring: Hint de caminho, Lexical Outlines e Physical Profiler).
+  - [x] Criar suíte de testes unitários `src/test/test_book_mode_detector.py` validando classificação com Ordem Paranormal (Score RPG: 13.0 vs Math: 0.0) e amostras matemáticas.
+
+- [x] **Fase 2: Extrator Anti-Ruído de Imagens e Parsers Especializados (PDF & EPUB)**
+  - [x] Implementar `src/services/book_parser/image_extractor.py` (filtros de dimensão mínima 200x200px, aspect ratio 10:1 e deduplicação MD5 para texturas repetidas).
+  - [x] Implementar `src/services/book_parser/pdf_parser.py` (PyMuPDF / fitz com leitura bicolunar, extração de LaTeX, conversão de caixas de regras para callouts e filtro de marcas d'água de compradores).
+  - [x] Implementar `src/services/book_parser/epub_parser.py` (descompactação semântica XHTML -> Markdown com limpeza de declarações XML e headers redundantes).
+  - [x] Criar suíte de testes `src/test/test_book_parsers.py`.
+
+- [x] **Fase 3: Modelagem de Conhecimento no Obsidian (Padrão MOC) & Git Atômico**
+  - [x] Implementar `src/domain/books.py` (`BookDomainService`).
+  - [x] Lógica de criação de MOC `{Título}.md` com frontmatter YAML, capa HD, sumário estruturado e callouts específicos por modo (`[!THEOREM]`, `[!NOTE]`, `[!DANGER]`).
+  - [x] Gravação das notas de capítulos em `Recursos/Livros/{Título}/` e imagens em `attachments/`.
+  - [x] Consolidação em commit & push Git atômico único via `ObsidianService`.
+  - [x] Criar suíte de testes `src/test/test_book_domain_obsidian.py`.
+
+- [x] **Fase 4: Tokenização Sintática Tiktoken & RAG Vetorial (Qdrant)**
+  - [x] Implementar `src/domain/tokenization.py` (`MarkdownSemanticChunker` com `tiktoken` e preservação de blocos).
+  - [x] Integrar vetorização em lote com `VectorDBService` (`text-embedding-3-small`) e IDs determinísticos via `uuid5`.
+  - [x] Criar suíte de testes `src/test/test_book_tokenization_rag.py`.
+
+- [x] **Fase 5: Worker Assíncrono, Telegram Bot & Interface MCP / REST**
+  - [x] Implementar `src/services/book_worker.py` (execução em background desacoplada com callback de status).
+  - [x] Atualizar `src/services/telegram_bot.py` (`handle_document` com detecção de livros e política de 2 notificações).
+  - [x] Implementar rota FastAPI `src/api/routes/books.py` (`POST /api/v1/books/upload` e `POST /api/v1/books/ingest_local`).
+  - [x] Implementar ferramenta MCP `src/mcp/tools/books.py` (`ingest_book`) e registrá-la em `src/mcp/server.py`.
+
+- [x] **Fase 6: Verificação Ponta a Ponta & Ingestão Piloto**
+  - [x] Suíte completa de testes de regressão `src/test/test_sprint20_book_ingestion.py` (58/58 testes aprovados em 1.3s).
+  - [x] Teste piloto real com livro EPUB (`Quick Start Guide`, 13 capítulos, 1 anexo, 16 vetores indexados no Qdrant) e validação de extração PDF com `Ordem Paranormal RPG` (classificação determinística e extração com filtro anti-watermark).
+  - [x] Registro de ADR (`ADR-014: Ingestão de Livros Zero-Token, Detector Heurístico de Modos e MOC no Obsidian`) no Vault.

@@ -42,6 +42,7 @@ from src.mcp.tools.tasks import register_task_tools
 from src.mcp.tools.context import register_context_tools
 from src.mcp.tools.decisions import register_decision_tools
 from src.mcp.tools.culture import register_culture_tools
+from src.mcp.tools.books import register_book_tools
 from src.mcp.resources.providers import register_resources
 from src.mcp.prompts.persona import register_prompts
 
@@ -73,6 +74,7 @@ def create_mcp_server() -> FastMCP:
     register_context_tools(mcp)
     register_decision_tools(mcp)
     register_culture_tools(mcp)
+    register_book_tools(mcp)
 
     # Registra Resources de dados (persona, briefing, temporal, vault)
     register_resources(mcp)

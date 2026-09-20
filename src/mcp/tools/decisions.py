@@ -1,4 +1,4 @@
-﻿"""
+"""
 MCP Decision & Batch Tools — log_decision e batch_move_obsidian_notes.
 
 Zero-Token Principle: escrita atomica no filesystem e Git. Nenhum LLM envolvido.
@@ -9,6 +9,7 @@ from typing import Annotated, List, Dict
 from mcp.server.fastmcp import FastMCP
 
 from src.domain.knowledge import KnowledgeDomainService
+from src.services.obsidian import sanitize_vault_filename
 from src.domain.temporal import resolve_temporal_context
 
 logger = logging.getLogger("MaeveMCP.tools.decisions")
@@ -67,7 +68,7 @@ tags: [decisao, arquitetura]
 ## Consequencias
 - Registrado em {date_str} via Maeve MCP Server.
 """
-            safe_title = title.replace("/", "_").replace("\\", "_")[:80]
+            safe_title = sanitize_vault_filename(title)[:80].strip(" .")
             filename = f"{iso_date}_{safe_title}"
 
             svc = KnowledgeDomainService()

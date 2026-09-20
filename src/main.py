@@ -13,7 +13,7 @@ from src.services.registry import (
 )
 from src.services.reminder_worker import reminder_worker
 from src.services.circadian_worker import circadian_worker
-from src.api.routes import health_router, chat_router, sync_router
+from src.api.routes import health_router, chat_router, sync_router, books_router
 
 load_dotenv()
 
@@ -94,6 +94,7 @@ app = FastAPI(
 app.include_router(health_router)
 app.include_router(chat_router)
 app.include_router(sync_router)
+app.include_router(books_router)
 
 # Mount MCP Remote Server (Transporte SSE com autenticação para Antigravity remoto)
 from src.mcp.server import get_mcp_asgi_app

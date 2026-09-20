@@ -80,6 +80,20 @@ def get_journal_service() -> "JournalService":
         _journal_service = JournalService()
     return _journal_service
 
+def get_culture_service() -> "CultureService":
+    global _culture_service
+    if _culture_service is None:
+        from src.services.culture import CultureService
+        _culture_service = CultureService()
+    return _culture_service
+
+def get_book_domain_service() -> "BookDomainService":
+    global _book_domain_service
+    if _book_domain_service is None:
+        from src.domain.books import BookDomainService
+        _book_domain_service = BookDomainService()
+    return _book_domain_service
+
 def get_maeve_agent() -> Optional["MaeveAgent"]:
     global _maeve_agent
     return _maeve_agent
