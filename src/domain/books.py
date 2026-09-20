@@ -21,6 +21,8 @@ from src.services.book_parser import (
     EPUBBookParser
 )
 from src.domain.tokenization import MarkdownSemanticChunker
+from src.services.book_parser.text_sanitizer import TextSanitizer
+from src.services.book_polisher import SurgicalBookPolisher
 
 logger = logging.getLogger("BookDomainService")
 
@@ -36,7 +38,8 @@ class BookDomainService:
         obsidian_service: Optional[ObsidianService] = None,
         culture_service: Optional[CultureService] = None,
         vector_db_service: Optional[VectorDBService] = None,
-        chunker: Optional[MarkdownSemanticChunker] = None
+        chunker: Optional[MarkdownSemanticChunker] = None,
+        polisher: Optional[SurgicalBookPolisher] = None
     ):
         self._obsidian = obsidian_service
         self._culture = culture_service
@@ -44,6 +47,7 @@ class BookDomainService:
         self.chunker = chunker or MarkdownSemanticChunker()
         self.pdf_parser = PDFBookParser()
         self.epub_parser = EPUBBookParser()
+        self.polisher = polisher or SurgicalBookPolisher()
 
     @property
     def obsidian(self) -> ObsidianService:
@@ -70,7 +74,8 @@ class BookDomainService:
         mode: Optional[str] = None,
         extract_images: bool = True,
         sync_git: bool = True,
-        sync_vector_db: bool = True
+        sync_vector_db: bool = True,
+        polish_with_llm: bool = False
     ) -> Dict[str, Any]:
         """
         Executa a ingestão completa com o invariante Zero-Token:
@@ -165,7 +170,17 @@ class BookDomainService:
                 "tags": ["recursos/livros/capitulo", parsed_book.mode.value]
             }
 
-            full_chapter_content = f"{chap.content_markdown}{nav_bar}"
+            # Polimento: CPU Sanitizer sempre ativo ($0.00). Se polish_with_llm=True, roda LLM cirúrgica.
+            if polish_with_llm:
+                polished_content, _ = await self.polisher.polish_chapter(
+                    chap.content_markdown,
+                    chapter_title=chap.title,
+                    mode=parsed_book.mode
+                )
+            else:
+                polished_content = TextSanitizer.sanitize(chap.content_markdown, mode=parsed_book.mode)
+
+            full_chapter_content = f"{polished_content}{nav_bar}"
             await self.obsidian.write_note_with_frontmatter(
                 relative_path=chap_rel_path,
                 content=full_chapter_content,
@@ -173,8 +188,8 @@ class BookDomainService:
             )
             saved_chapters_paths.append(chap_rel_path)
 
-            # Segmentação sintática do capítulo para o RAG
-            chunks = self.chunker.chunk_markdown(chap.content_markdown, chapter_title=chap.title)
+            # Segmentação sintática do capítulo para o RAG usando o conteúdo sanitizado/polido
+            chunks = self.chunker.chunk_markdown(polished_content, chapter_title=chap.title)
             for chk in chunks:
                 all_chunks_to_index.append({
                     "text": chk.content,

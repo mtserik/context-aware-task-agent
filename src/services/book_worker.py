@@ -20,6 +20,7 @@ class BookJob:
     status: str = "PENDING"  # PENDING, PROCESSING, SUCCESS, FAILED
     sync_git: bool = True
     sync_vector_db: bool = True
+    polish_with_llm: bool = False
     created_at: datetime = field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
     result: Optional[Dict[str, Any]] = None
@@ -51,6 +52,7 @@ class BookIngestionWorker:
         extract_images: bool = True,
         sync_git: bool = True,
         sync_vector_db: bool = True,
+        polish_with_llm: bool = False,
         on_complete: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         on_error: Optional[Callable[[str], Awaitable[None]]] = None
     ) -> str:
@@ -63,6 +65,7 @@ class BookIngestionWorker:
             mode=mode,
             sync_git=sync_git,
             sync_vector_db=sync_vector_db,
+            polish_with_llm=polish_with_llm,
             on_complete=on_complete,
             on_error=on_error
         )
@@ -70,7 +73,7 @@ class BookIngestionWorker:
 
         # Dispara background task sem bloquear o caller
         asyncio.create_task(self._process_job(job, extract_images))
-        logger.info(f"Job de ingestão {job_id} submetido para '{filename}'.")
+        logger.info(f"Job de ingestão {job_id} submetido para '{filename}' (polish_with_llm={polish_with_llm}).")
         return job_id
 
     async def _process_job(self, job: BookJob, extract_images: bool):
@@ -83,7 +86,8 @@ class BookIngestionWorker:
                 mode=job.mode,
                 extract_images=extract_images,
                 sync_git=job.sync_git,
-                sync_vector_db=job.sync_vector_db
+                sync_vector_db=job.sync_vector_db,
+                polish_with_llm=job.polish_with_llm
             )
             job.status = "SUCCESS"
             job.completed_at = datetime.now()

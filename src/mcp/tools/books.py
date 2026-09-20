@@ -24,6 +24,7 @@ def register_book_tools(mcp: FastMCP) -> None:
         file_path: Annotated[str, "Caminho absoluto do arquivo (.pdf ou .epub) no disco local"],
         mode: Annotated[Optional[str], "Modo operacional opcional: 'math', 'rpg', 'narrative', 'general' ou omitido para auto-detecção"] = None,
         extract_images: Annotated[bool, "Se verdadeiro, extrai capa e ilustrações aprovadas pelo filtro anti-ruído"] = True,
+        polish_with_llm: Annotated[bool, "Se verdadeiro, aciona polidor cirúrgico híbrido com GPT-5.6 Luna para tabelas e callouts complexos"] = False,
     ) -> str:
         """Processa e ingere o livro no Obsidian e Qdrant."""
         if not os.path.exists(file_path):
@@ -36,7 +37,8 @@ def register_book_tools(mcp: FastMCP) -> None:
                 mode=mode,
                 extract_images=extract_images,
                 sync_git=True,
-                sync_vector_db=True
+                sync_vector_db=True,
+                polish_with_llm=polish_with_llm
             )
 
             lines = [

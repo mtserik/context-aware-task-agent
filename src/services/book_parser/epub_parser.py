@@ -145,6 +145,11 @@ class EPUBBookParser(BaseBookParser):
             if len(clean_chap_title) > 80:
                 clean_chap_title = clean_chap_title[:77] + "..."
 
+            # Ignora páginas de copyright de compartilhamento ou fichas catalográficas
+            lower_chap = clean_chap_title.lower()
+            if any(p in lower_chap for p in ["dados de copyright", "lelivros", "sobre nós", "ficha catalográfica"]):
+                continue
+
             # Converte HTML para Markdown limpo
             md_content = markdownify.markdownify(
                 str(soup),

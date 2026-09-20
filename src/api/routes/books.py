@@ -19,12 +19,14 @@ class IngestLocalRequest(BaseModel):
     file_path: str
     mode: Optional[str] = None
     extract_images: bool = True
+    polish_with_llm: bool = False
 
 @router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
 async def upload_and_ingest_book(
     file: UploadFile = File(...),
     mode: Optional[str] = Form(None),
     extract_images: bool = Form(True),
+    polish_with_llm: bool = Form(False),
     api_key: str = Depends(get_api_key)
 ):
     """
@@ -55,7 +57,8 @@ async def upload_and_ingest_book(
         file_path=dest_path,
         filename=file.filename,
         mode=mode,
-        extract_images=extract_images
+        extract_images=extract_images,
+        polish_with_llm=polish_with_llm
     )
 
     return {
@@ -80,7 +83,8 @@ async def ingest_local_book(
         file_path=req.file_path,
         filename=filename,
         mode=req.mode,
-        extract_images=req.extract_images
+        extract_images=req.extract_images,
+        polish_with_llm=req.polish_with_llm
     )
 
     return {
