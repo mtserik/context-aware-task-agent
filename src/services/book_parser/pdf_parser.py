@@ -147,7 +147,11 @@ class PDFBookParser(BaseBookParser):
                     end_pg = total_pages
 
                 # Sanitiza título para Obsidian
-                clean_title = re.sub(r'[:/\\?*|"<>]', " - ", title).strip()
+                clean_title = re.sub(r'[\r\n\t]+', ' ', title)
+                clean_title = re.sub(r'[:/\\?*|"<>]', ' - ', clean_title)
+                clean_title = re.sub(r'\s{2,}', ' ', clean_title).strip()
+                if len(clean_title) > 80:
+                    clean_title = clean_title[:77] + "..."
                 ranges.append((clean_title, start_pg, end_pg))
             return ranges
 
@@ -302,6 +306,8 @@ class PDFBookParser(BaseBookParser):
         """Limpa hashes, extensões e ruídos do título do livro."""
         clean = re.sub(r'[-_][a-z0-9]{5,10}$', '', raw_title)  # remove hashes como -lyfxjj
         clean = re.sub(r'\.pdf$', '', clean, flags=re.IGNORECASE)
+        clean = re.sub(r'[\r\n\t]+', ' ', clean)
+        clean = re.sub(r'[:/\\?*|"<>]', ' - ', clean)
         clean = clean.replace("-", " ").replace("_", " ").strip()
         words = clean.split()
         formatted = []

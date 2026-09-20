@@ -49,7 +49,10 @@ class EPUBBookParser(BaseBookParser):
         # 1. Metadados Dublin Core
         title_meta = book.get_metadata("DC", "title")
         raw_title = title_meta[0][0] if title_meta else os.path.splitext(fname)[0]
-        clean_title = raw_title.strip()
+        # Sanitiza caracteres proibidos para nomes de pasta/arquivo no Windows e Obsidian
+        clean_title = re.sub(r'[\r\n\t]+', ' ', str(raw_title))
+        clean_title = re.sub(r'[:/\\?*|"<>]', ' - ', clean_title)
+        clean_title = re.sub(r'\s{2,}', ' ', clean_title).strip()
 
         author_meta = book.get_metadata("DC", "creator")
         author = author_meta[0][0] if author_meta else "Desconhecido"
@@ -136,7 +139,11 @@ class EPUBBookParser(BaseBookParser):
             # Detecta título do capítulo a partir de H1, H2 ou title tag
             h1 = soup.find(["h1", "h2"])
             chap_title = h1.get_text().strip() if h1 else f"Capítulo {order:02d}"
-            clean_chap_title = re.sub(r'[:/\\?*|"<>]', " - ", chap_title).strip()
+            clean_chap_title = re.sub(r'[\r\n\t]+', ' ', chap_title)
+            clean_chap_title = re.sub(r'[:/\\?*|"<>]', ' - ', clean_chap_title)
+            clean_chap_title = re.sub(r'\s{2,}', ' ', clean_chap_title).strip()
+            if len(clean_chap_title) > 80:
+                clean_chap_title = clean_chap_title[:77] + "..."
 
             # Converte HTML para Markdown limpo
             md_content = markdownify.markdownify(
