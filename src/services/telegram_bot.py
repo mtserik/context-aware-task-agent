@@ -485,7 +485,8 @@ class TelegramService:
         await update.message.reply_text(f"Recebi seu documento: {filename}. Processando conteúdo... 📖")
 
         # Determina a extensão do arquivo temporário a partir do nome
-        ext = os.path.splitext(filename)[1] or ".tmp"
+        ext = os.path.splitext(filename)[1].lower() or ".tmp"
+        caption = (update.message.caption or "").lower()
         temp_doc_path = None
         try:
             file = await context.bot.get_file(doc.file_id)
@@ -493,7 +494,108 @@ class TelegramService:
                 await file.download_to_drive(custom_path=temp_doc.name)
                 temp_doc_path = temp_doc.name
 
-            # Extração universal de texto
+            # -------------------------------------------------------------
+            # Detecção de Livro & Invariante Zero-Token (Sprint 20)
+            # -------------------------------------------------------------
+            is_book = False
+            total_pages = 0
+
+            if ext == ".epub":
+                is_book = True
+            elif ext == ".pdf":
+                try:
+                    import fitz
+                    pdf_doc = fitz.open(temp_doc_path)
+                    total_pages = len(pdf_doc)
+                    pdf_doc.close()
+                    if total_pages >= 15 or any(h in caption for h in ["#livro", "#rpg", "#math", "livro", "rpg"]):
+                        is_book = True
+                except Exception as pdf_err:
+                    logging.debug(f"Erro ao verificar páginas do PDF: {pdf_err}")
+
+            if is_book:
+                from src.services.book_worker import get_book_worker
+                from src.services.registry import get_obsidian_service
+                import shutil
+
+                storage_dir = os.path.join(tempfile.gettempdir(), "maeve_books")
+                os.makedirs(storage_dir, exist_ok=True)
+                persistent_path = os.path.join(storage_dir, filename)
+                shutil.copyfile(temp_doc_path, persistent_path)
+
+                chat_id = update.effective_chat.id
+                pages_msg = f" (~{total_pages} páginas)" if total_pages else ""
+
+                # 1. Notificação de Início (Start imediato)
+                await update.message.reply_text(
+                    f"📖 Recebi o livro '{filename}'{pages_msg}!\n"
+                    f"Iniciando extração estruturada, criação do MOC no Obsidian e vetorização no Qdrant em segundo plano... ⏳\n"
+                    f"Te aviso com a capa e resumo assim que estiver concluído!"
+                )
+
+                # Callbacks para notificação de conclusão (Finish)
+                async def on_book_complete(res: dict):
+                    obsidian = get_obsidian_service()
+                    caption_msg = (
+                        f"✅ *Livro Ingerido com Sucesso no Obsidian!*\n\n"
+                        f"📚 *Título:* {res['title']}\n"
+                        f"✍️ *Autoria:* {res['author']} ({res['year']})\n"
+                        f"🎭 *Modo:* {res['mode'].upper()}\n"
+                        f"📁 *Capítulos:* {res['chapter_count']} notas criadas\n"
+                        f"🧠 *RAG:* {res['vectors_indexed']} chunks indexados no Qdrant\n"
+                        f"🖼️ *Anexos:* {res['attachments_count']} imagens salvas\n"
+                        f"📑 *MOC:* `{res['moc_path']}`\n\n"
+                        f"A obra foi sincronizada no Git e já está pronta para buscas semânticas!"
+                    )
+
+                    # Tenta enviar foto da capa se disponível no disco
+                    cover_local = os.path.join(obsidian.vault_path, f"Recursos/Livros/{res['title']}/attachments/cover.png")
+                    if not os.path.exists(cover_local):
+                        cover_local = os.path.join(obsidian.vault_path, f"Recursos/Livros/{res['title']}/attachments/cover.jpg")
+
+                    try:
+                        if os.path.exists(cover_local):
+                            with open(cover_local, "rb") as photo_f:
+                                await context.bot.send_photo(
+                                    chat_id=chat_id,
+                                    photo=photo_f,
+                                    caption=caption_msg,
+                                    parse_mode="Markdown"
+                                )
+                        else:
+                            await context.bot.send_message(
+                                chat_id=chat_id,
+                                text=caption_msg,
+                                parse_mode="Markdown"
+                            )
+                    except Exception as send_err:
+                        logging.error(f"Erro ao enviar notificação de livro completo: {send_err}")
+                        await context.bot.send_message(chat_id=chat_id, text=caption_msg)
+
+                async def on_book_error(err_msg: str):
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"❌ Ocorreu um erro ao processar o livro '{filename}':\n`{err_msg}`",
+                        parse_mode="Markdown"
+                    )
+
+                # Despacha para o worker
+                hint_mode = "rpg" if "#rpg" in caption else ("math" if "#math" in caption else None)
+                worker = get_book_worker()
+                worker.submit_job(
+                    file_path=persistent_path,
+                    filename=filename,
+                    mode=hint_mode,
+                    extract_images=True,
+                    on_complete=on_book_complete,
+                    on_error=on_book_error
+                )
+                return
+
+            # -------------------------------------------------------------
+            # Fluxo Tradicional para Documentos Curtos / Currículos
+            # -------------------------------------------------------------
+            await update.message.reply_text(f"Recebi seu documento: {filename}. Processando conteúdo... 📄")
             parse_res = DocumentParserService.parse_document(
                 file_path=temp_doc_path,
                 filename=filename,

@@ -420,6 +420,22 @@ class ObsidianService:
         full_content = yaml_block + content
         return await self.write_note(relative_path, full_content, commit_message)
 
+    async def write_binary_file(self, relative_path: str, data: bytes, commit_message: str = None) -> str:
+        """
+        Grava um arquivo binário (imagens, capas, anexos) no vault.
+        """
+        full_path = self._safe_resolve(relative_path)
+        if os.path.isdir(full_path):
+            raise Exception(f"Erro: '{relative_path}' é um diretório, não um arquivo.")
+
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "wb") as f:
+            f.write(data)
+
+        if commit_message:
+            await self.push(commit_message)
+        return full_path
+
     async def append_note(
         self,
         relative_path: str,
