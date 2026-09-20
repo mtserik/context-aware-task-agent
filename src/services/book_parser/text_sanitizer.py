@@ -14,11 +14,19 @@ class TextSanitizer:
         """
         Corrige letras capitulares que foram extraídas em linhas isoladas.
         Exemplo: 'B\\noas-vindas' -> 'Boas-vindas'
+        Preserva espaço quando a letra isolada for um artigo (ex: 'A\\nhistória' -> 'A história').
         """
-        # Trata capitular maiúscula isolada seguida por início de palavra minúscula
+        def _join_caps(m: re.Match) -> str:
+            cap = m.group(1)
+            rest = m.group(2)
+            raw = re.sub(r'[\u201c\u201d"\'«]', '', cap).strip()
+            if raw in ["A", "O", "E"] and len(rest) >= 4 and not rest.startswith(("gora", "inda", "penas", "pesar", "qui")):
+                return f"{cap} {rest}"
+            return f"{cap}{rest}"
+
         cleaned = re.sub(
             r'(?m)^([\u201c\u201d"\'«]?[A-ZÀ-Ú])\s*\n\s*([a-zà-ú]+)',
-            r'\1\2',
+            _join_caps,
             text
         )
         return cleaned
