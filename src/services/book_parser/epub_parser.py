@@ -154,12 +154,23 @@ class EPUBBookParser(BaseBookParser):
                     md_content
                 )
 
-            est_tokens = len(md_content.split()) * 4 // 3
+            # Remove declarações XML residuais
+            md_content = re.sub(r'<\?xml[^>]*\?>', '', md_content, flags=re.IGNORECASE)
+            md_content = re.sub(r'xml\s+version=[\'"][^\'"]*[\'"][^\n]*\??', '', md_content, flags=re.IGNORECASE)
+            md_content = re.sub(r'\n{3,}', '\n\n', md_content).strip()
+
+            # Evita título duplicado se o markdown já começar com o cabeçalho
+            if md_content.startswith("# ") and (clean_chap_title.lower() in md_content[:150].lower()):
+                final_content = md_content
+            else:
+                final_content = f"# {clean_chap_title}\n\n{md_content}"
+
+            est_tokens = len(final_content.split()) * 4 // 3
 
             chapters.append(ParsedChapter(
                 title=clean_chap_title,
                 order=order,
-                content_markdown=f"# {clean_chap_title}\n\n{md_content}",
+                content_markdown=final_content,
                 start_page=order,
                 end_page=order,
                 images=[],
