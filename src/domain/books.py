@@ -117,6 +117,16 @@ class BookDomainService:
         book_dir = f"Recursos/Livros/{clean_title}"
         attachments_dir = f"{book_dir}/attachments"
 
+        # Limpeza preventiva de notas antigas no diretório para evitar notas duplicadas ou com numeração legada
+        full_book_dir = os.path.join(self.obsidian.vault_path, book_dir)
+        if os.path.exists(full_book_dir):
+            for old_file in os.listdir(full_book_dir):
+                if old_file.endswith(".md"):
+                    try:
+                        os.remove(os.path.join(full_book_dir, old_file))
+                    except Exception as rm_err:
+                        logger.warning(f"Não foi possível remover nota antiga '{old_file}': {rm_err}")
+
         # 2. Enriquecimento de Metadados via CultureService (OpenLibrary/Wikipedia)
         meta_online = {}
         try:
@@ -145,7 +155,56 @@ class BookDomainService:
             if img.is_cover:
                 cover_rel_path = f"attachments/{img.name}"
 
-        # 4. Gravação dos Capítulos Atômicos
+        # 4. Expansão/Subdivisão de Capítulos que Excedem o Teto de Tokens (máximo 7.000 tokens por nota)
+        MAX_CHAPTER_TOKENS = 7000
+        expanded_chapters: List[ParsedChapter] = []
+        for chap in parsed_book.chapters:
+            est_tokens = chap.estimated_tokens or (len(chap.content_markdown.split()) * 4 // 3)
+            if est_tokens <= MAX_CHAPTER_TOKENS:
+                expanded_chapters.append(chap)
+            else:
+                # Subdivide nas fronteiras naturais de cabeçalhos Markdown H2 ou H3
+                sections = re.split(r'(?m)(?=^## )', chap.content_markdown)
+                if len(sections) <= 1:
+                    sections = re.split(r'(?m)(?=^### )', chap.content_markdown)
+                if len(sections) <= 1:
+                    sections = chap.content_markdown.split('\n\n')
+
+                sub_parts = []
+                current_part = []
+                current_tokens = 0
+                for sec in sections:
+                    sec_tokens = len(sec.split()) * 4 // 3
+                    if current_tokens + sec_tokens > MAX_CHAPTER_TOKENS and current_part:
+                        sub_parts.append("\n\n".join(current_part).strip())
+                        current_part = [sec]
+                        current_tokens = sec_tokens
+                    else:
+                        current_part.append(sec)
+                        current_tokens += sec_tokens
+                if current_part:
+                    sub_parts.append("\n\n".join(current_part).strip())
+
+                total_sub = len(sub_parts)
+                for part_idx, part_text in enumerate(sub_parts, start=1):
+                    part_title = f"{chap.title} (Parte {part_idx:02d})" if total_sub > 1 else chap.title
+                    part_tokens = len(part_text.split()) * 4 // 3
+                    expanded_chapters.append(ParsedChapter(
+                        title=part_title,
+                        order=len(expanded_chapters) + 1,
+                        content_markdown=part_text,
+                        start_page=chap.start_page,
+                        end_page=chap.end_page,
+                        images=chap.images,
+                        estimated_tokens=part_tokens
+                    ))
+
+        # Re-indexa ordens sequenciais de 1 a N
+        for new_order, chap in enumerate(expanded_chapters, start=1):
+            chap.order = new_order
+        parsed_book.chapters = expanded_chapters
+
+        # 5. Gravação dos Capítulos Atômicos
         saved_chapters_paths = []
         all_chunks_to_index: List[Dict[str, Any]] = []
 

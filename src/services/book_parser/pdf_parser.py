@@ -126,14 +126,22 @@ class PDFBookParser(BaseBookParser):
             }
         )
 
-    def _segment_chapters(self, doc: fitz.Document, total_pages: int) -> List[Tuple[str, int, int]]:
+    def _segment_chapters(self, doc: fitz.Document, total_pages: int, max_pages_per_chapter: int = 25) -> List[Tuple[str, int, int]]:
         """
         Determina os intervalos de páginas dos capítulos usando TOC ou fatiamento de páginas.
-        Retorna lista de (título_capítulo, start_page_1based, end_page_1based).
+        Se um capítulo de nível 1 for extenso (> max_pages_per_chapter), verifica se há
+        subtópicos de nível 2 para subdividir em sub-notas atômicas e navegáveis.
         """
         toc = doc.get_toc()
-        # Filtra apenas tópicos de nível 1 do TOC
         level1_entries = [entry for entry in toc if entry[0] == 1 and entry[2] > 0]
+
+        def _clean_chapter_str(raw: str) -> str:
+            clean = re.sub(r'[\r\n\t]+', ' ', raw)
+            clean = re.sub(r'[:/\\?*|"<>]', ' - ', clean)
+            clean = re.sub(r'\s{2,}', ' ', clean).strip()
+            if len(clean) > 80:
+                clean = clean[:77] + "..."
+            return clean
 
         if len(level1_entries) >= 2:
             ranges = []
@@ -146,17 +154,56 @@ class PDFBookParser(BaseBookParser):
                 else:
                     end_pg = total_pages
 
-                # Sanitiza título para Obsidian
-                clean_title = re.sub(r'[\r\n\t]+', ' ', title)
-                clean_title = re.sub(r'[:/\\?*|"<>]', ' - ', clean_title)
-                clean_title = re.sub(r'\s{2,}', ' ', clean_title).strip()
-                if len(clean_title) > 80:
-                    clean_title = clean_title[:77] + "..."
-                ranges.append((clean_title, start_pg, end_pg))
+                clean_base_title = _clean_chapter_str(title)
+                page_span = end_pg - start_pg + 1
+
+                # Subdivide capítulos extensos que possuem nível 2 no TOC
+                if page_span > max_pages_per_chapter:
+                    sub_entries = [e for e in toc if e[0] == 2 and start_pg <= e[2] <= end_pg]
+                    if len(sub_entries) >= 2:
+                        # Se houver páginas antes da primeira sub-entrada (ex: introdução ao capítulo)
+                        if sub_entries[0][2] > start_pg:
+                            first_end = sub_entries[0][2] - 1
+                            ranges.append((_clean_chapter_str(f"{clean_base_title} - Introdução"), start_pg, first_end))
+
+                        cluster_title = _clean_chapter_str(sub_entries[0][1])
+                        cluster_start = max(start_pg, sub_entries[0][2])
+
+                        for s_idx in range(len(sub_entries)):
+                            cur_sub = sub_entries[s_idx]
+                            s_start = max(start_pg, cur_sub[2])
+                            s_end = (
+                                max(s_start, sub_entries[s_idx + 1][2] - 1)
+                                if s_idx + 1 < len(sub_entries)
+                                else end_pg
+                            )
+
+                            is_last = (s_idx == len(sub_entries) - 1)
+                            cur_span = s_end - cluster_start + 1
+
+                            if is_last or cur_span >= 6:
+                                full_title = _clean_chapter_str(f"{clean_base_title} - {cluster_title}")
+                                ranges.append((full_title, cluster_start, s_end))
+                                if not is_last:
+                                    next_sub = sub_entries[s_idx + 1]
+                                    cluster_title = _clean_chapter_str(next_sub[1])
+                                    cluster_start = max(start_pg, next_sub[2])
+                        continue
+
+                    # Se não tem nível 2, divide em partes uniformes
+                    part_num = 1
+                    for chunk_start in range(start_pg, end_pg + 1, max_pages_per_chapter):
+                        chunk_end = min(end_pg, chunk_start + max_pages_per_chapter - 1)
+                        part_title = _clean_chapter_str(f"{clean_base_title} (Parte {part_num:02d})")
+                        ranges.append((part_title, chunk_start, chunk_end))
+                        part_num += 1
+                    continue
+
+                ranges.append((clean_base_title, start_pg, end_pg))
             return ranges
 
         # Fallback se não houver TOC estruturado: fatiamento de páginas
-        chunk_size = 20
+        chunk_size = max_pages_per_chapter
         ranges = []
         chap_num = 1
         for start_pg in range(1, total_pages + 1, chunk_size):
