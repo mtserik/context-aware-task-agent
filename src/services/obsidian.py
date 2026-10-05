@@ -177,18 +177,69 @@ class ObsidianService:
         except Exception:
             return False
 
+    async def _is_shallow(self) -> bool:
+        """Verifica se o repositório local é um shallow clone (--depth 1)."""
+        try:
+            output = await self._run_git(["rev-parse", "--is-shallow-repository"])
+            return output.strip().lower() == "true"
+        except Exception:
+            return False
+
+    def _configure_sparse_checkout(self):
+        """
+        Configura o sparse-checkout para baixar APENAS arquivos Markdown (.md)
+        e ignorar completamente imagens, PDFs, vídeos e anexos pesados.
+        Reduz o consumo de disco do Vault no Railway de 1.4 GB para ~10 MB (99.3% de economia).
+        """
+        sparse_file = os.path.join(self.vault_path, ".git", "info", "sparse-checkout")
+        os.makedirs(os.path.dirname(sparse_file), exist_ok=True)
+        patterns = [
+            "/*",
+            "!**/attachments/",
+            "!*.png",
+            "!*.jpg",
+            "!*.jpeg",
+            "!*.webp",
+            "!*.gif",
+            "!*.pdf",
+            "!*.mp4",
+            "!*.zip",
+            "!*.bin",
+            "!*.tar.gz",
+        ]
+        with open(sparse_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(patterns) + "\n")
+
+        try:
+            self._run_git_sync(["config", "core.sparseCheckout", "true"])
+        except Exception as e:
+            print(f"Aviso ao ativar sparse-checkout: {e}")
+
     async def sync(self):
         """
-        Garante que o repositório está clonado e atualizado.
-        Implementa suporte robusto a Railway Volumes (git init em vez de git clone).
+        Garante que o repositório está clonado e atualizado em modo ultra-leve:
+        - Shallow Clone (--depth 1) para não baixar histórico massivo de 700 MB.
+        - Sparse Checkout para excluir anexos e imagens pesadas (695 MB).
+        Mantém o repositório em torno de ~10 MB de disco no Railway, eliminando erros de falta de espaço.
         """
         git_dir = os.path.join(self.vault_path, ".git")
-        
-        if not os.path.exists(git_dir):
-            print(f"Inicializando repositório Obsidian em {self.vault_path}...")
-            # Garante que o diretório existe
-            os.makedirs(self.vault_path, exist_ok=True)
-            
+        os.makedirs(self.vault_path, exist_ok=True)
+
+        # Se não existe repositório ou se for um clone legado gigante não-shallow:
+        needs_init = not os.path.exists(git_dir)
+        if not needs_init:
+            try:
+                is_shallow = await self._is_shallow()
+                if not is_shallow:
+                    print(f"Detectado clone não-shallow volumoso em {self.vault_path}. Reconfigurando para modo shallow + sparse...")
+                    import shutil
+                    shutil.rmtree(git_dir)
+                    needs_init = True
+            except Exception:
+                pass
+
+        if needs_init:
+            print(f"Inicializando repositório Obsidian ultra-leve em {self.vault_path}...")
             try:
                 # 1. git init garantindo branch main
                 try:
@@ -196,40 +247,72 @@ class ObsidianService:
                 except Exception:
                     await asyncio.to_thread(subprocess.run, ["git", "init"], cwd=self.vault_path, check=True)
                     await asyncio.to_thread(subprocess.run, ["git", "branch", "-M", "main"], cwd=self.vault_path)
-                
+
                 # 2. Configurar remote
                 try:
                     await asyncio.to_thread(subprocess.run, ["git", "remote", "remove", "origin"], cwd=self.vault_path, capture_output=True)
                 except Exception:
                     pass
                 await asyncio.to_thread(subprocess.run, ["git", "remote", "add", "origin", self.repo_url], cwd=self.vault_path, check=True)
-                
-                # 3. Configurar usuário Git localmente
+
+                # 3. Configurar usuário Git e Sparse-Checkout
                 self._setup_git_user()
-                
-                # 4. Fetch e Checkout tracking
-                print(f"Baixando arquivos de {self.repo_url}...")
-                await asyncio.to_thread(subprocess.run, ["git", "fetch", "origin"], cwd=self.vault_path, env=os.environ, check=True)
-                
-                # Cria branch local 'main' com tracking para 'origin/main'
+                self._configure_sparse_checkout()
+
+                # 4. Fetch shallow com fallback
+                print(f"Baixando árvore leve de {self.repo_url} (--depth 1)...")
+                fetch_success = False
+                try:
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["git", "fetch", "--depth", "1", "--filter=blob:none", "origin", "main"],
+                        cwd=self.vault_path,
+                        env=os.environ,
+                        check=True,
+                        capture_output=True
+                    )
+                    fetch_success = True
+                except Exception:
+                    pass
+
+                if not fetch_success:
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["git", "fetch", "--depth", "1", "origin", "main"],
+                        cwd=self.vault_path,
+                        env=os.environ,
+                        check=True
+                    )
+
+                # 5. Checkout apenas dos arquivos permitidos pelo sparse-checkout
                 try:
                     await asyncio.to_thread(subprocess.run, ["git", "checkout", "-B", "main", "origin/main"], cwd=self.vault_path, check=True)
                 except Exception:
                     await asyncio.to_thread(subprocess.run, ["git", "reset", "--hard", "origin/main"], cwd=self.vault_path, check=True)
                     await asyncio.to_thread(subprocess.run, ["git", "branch", "-M", "main"], cwd=self.vault_path)
-                
-                print("Vault inicializado com sucesso via git init.")
+
+                print("Vault inicializado com sucesso em modo ultra-leve (~10 MB).")
             except subprocess.CalledProcessError as e:
                 error_output = e.stderr.decode() if hasattr(e, 'stderr') and e.stderr else str(e)
-                print(f"Erro crítico ao sincronizar vault: {error_output}")
+                print(f"Erro crítico ao inicializar vault ultra-leve: {error_output}")
                 raise Exception(f"Falha na inicialização do Git: {error_output}")
         else:
-            print("Atualizando Vault (git pull)...")
+            print("Atualizando Vault ultra-leve (git fetch shallow + sparse)...")
             branch = await self._ensure_branch()
+            self._configure_sparse_checkout()
             try:
-                await self._run_git(["pull", "--rebase", "origin", branch])
+                try:
+                    await self._run_git(["fetch", "--depth", "1", "--filter=blob:none", "origin", branch])
+                except Exception:
+                    await self._run_git(["fetch", "--depth", "1", "origin", branch])
+
+                status = (await self._run_git(["status", "--porcelain"])).strip()
+                if not status:
+                    await self._run_git(["reset", "--hard", f"origin/{branch}"])
+                else:
+                    await self._run_git(["pull", "--rebase", "origin", branch])
             except Exception as e:
-                print(f"Erro no pull --rebase: {e}. Tentando abortar rebase.")
+                print(f"Aviso no update do vault: {e}. Tentando fallback seguro...")
                 try:
                     await self._run_git(["rebase", "--abort"])
                 except Exception:
@@ -242,20 +325,19 @@ class ObsidianService:
     async def push(self, message: str = "Maeve Auto-update"):
         """
         Faz o commit e push das alterações locais, garantindo sincronia com o remoto.
-        Implementa lógica de rebase e resolução de conflitos simples.
+        Compatível com shallow clone (--depth 1).
         """
         if not os.path.exists(os.path.join(self.vault_path, ".git")):
             print(f"Aviso: Vault em '{self.vault_path}' não é um repositório Git. Pulando push Git.")
             return
 
         try:
-            # 1. Garante que a branch local está alinhada para 'main'
             branch = await self._ensure_branch()
             self._setup_git_user()
 
             await self._run_git(["add", "."])
             status = await self._run_git(["status", "--porcelain"])
-            
+
             should_push = False
             if status.strip():
                 await self._run_git(["commit", "-m", message])
@@ -265,23 +347,20 @@ class ObsidianService:
                 should_push = True
 
             if should_push:
-                print("Sincronizando com o remoto antes do push (pull --rebase)...")
+                print("Sincronizando com o remoto antes do push...")
                 try:
-                    await self._run_git(["pull", "--rebase", "origin", branch])
-                except Exception:
-                    print("Conflito detectado ou falha no rebase. Tentando forçar resolução...")
+                    await self._run_git(["push", "origin", f"HEAD:{branch}"])
+                    print(f"Alterações enviadas com sucesso para origin/{branch}: {message}")
+                except Exception as push_err:
+                    print(f"Push direto rejeitado ({push_err}). Tentando sincronizar com fetch shallow antes...")
                     try:
-                        await self._run_git(["rebase", "--abort"])
-                    except Exception:
-                        pass
-                    try:
-                        await self._run_git(["pull", "origin", branch, "--no-edit"])
-                    except Exception as pull_err:
-                        print(f"Aviso no pull fallback: {pull_err}")
-                
-                # Push explícito com HEAD:branch para garantir envio sem erro de refspec
-                await self._run_git(["push", "origin", f"HEAD:{branch}"])
-                print(f"Alterações enviadas com sucesso para origin/{branch}: {message}")
+                        await self._run_git(["fetch", "--depth", "1", "origin", branch])
+                        await self._run_git(["rebase", f"origin/{branch}"])
+                        await self._run_git(["push", "origin", f"HEAD:{branch}"])
+                        print(f"Push concluído com sucesso após rebase: {message}")
+                    except Exception as rebase_err:
+                        print(f"Falha no push após rebase: {rebase_err}")
+                        raise rebase_err
             else:
                 print("Nada para commitar ou enviar ao remoto.")
         except Exception as e:

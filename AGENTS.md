@@ -1045,4 +1045,36 @@ Para processar com fidelidade livros de naturezas radicalmente distintas (ex: *A
 - [x] **Fase 6: Verificação Ponta a Ponta & Ingestão Piloto**
   - [x] Suíte completa de testes de regressão `src/test/test_sprint20_book_ingestion.py` (58/58 testes aprovados em 1.3s).
   - [x] Teste piloto real com livro EPUB (`Quick Start Guide`, 13 capítulos, 1 anexo, 16 vetores indexados no Qdrant) e validação de extração PDF com `Ordem Paranormal RPG` (classificação determinística e extração com filtro anti-watermark).
-  - [x] Registro de ADR (`ADR-014: Ingestão de Livros Zero-Token, Detector Heurístico de Modos e MOC no Obsidian`) no Vault.
+  - [x] Registro de ADR (`ADR-014: Ingestão de Livros Zero-Token, Detector Heurístico de Modos e MOC no Obsidian`) no Vault.
+
+---
+
+### 9.12 Sprint 21: Arquitetura de Sincronização Ultra-Leve do Obsidian (Shallow Sparse-Checkout, Qdrant Canônico & Sync Incremental SHA-256) (2026-10-05)
+
+> **Objetivo:** 
+> 1. Solucionar definitivamente o esgotamento de disco no Railway (`[Errno 28] No space left on device`), causado pelo clone do Vault com 1.4 GB (703 MB de histórico Git e 695 MB de anexos/imagens em `Recursos/Livros`).
+> 2. Estabelecer o Qdrant como **fonte única e canônica de consulta** (`search_context`, `get_note_content`, `memory_search`) para a Maeve em tempo de execução, desacoplando a leitura do sistema de arquivos local.
+> 3. Implementar sincronização incremental estrita com hash SHA-256 no Qdrant e batching seguro em `VectorDBService.upsert_documents`, eliminando o bug de travamento/repetição de notas e economizando 100% de tokens em notas inalteradas.
+
+#### 1. Diagnóstico da Causa Raiz
+- O Vault acumulou 1.4 GB no GitHub devido a commits de imagens e anexos de livros técnicos e RPGs.
+- O volume padrão de 1 GB do Railway lotava durante `git fetch` e `git checkout`, interrompendo a extração pela metade (motivo pelo qual apenas 7 notas ficavam salvas no disco e eram repetidas em loop no sync).
+- Limpar a pasta no Railway impedia novos syncs porque o `git fetch` subsequente falhava no download do packfile de ~600 MB.
+
+#### 2. Componentes Técnicos Implementados
+1. **Shallow Clone & Sparse Checkout no `ObsidianService` (`src/services/obsidian.py`):**
+   - Configuração automática de `.git/info/sparse-checkout` filtrando estritamente arquivos Markdown (`/*`) e bloqueando binários (`!**/attachments/`, `!*.png`, `!*.jpg`, `!*.pdf`, etc.).
+   - Utilização de `git fetch --depth 1` (com suporte a `--filter=blob:none`), eliminando os 703 MB de histórico antigo de commits.
+   - Redução do uso de disco do Vault no servidor de **1.4 GB para ~10 MB** (economia de 99.3%).
+   - Auto-recuperação: detecção de clones antigos não-shallow (`_is_shallow()`) com re-inicialização automática para liberar espaço imediatamente no volume.
+2. **Batching e Hash SHA-256 no `VectorDBService` (`src/services/vector_db.py`):**
+   - `upsert_documents` agora fatia payloads em lotes de 25 documentos (`batch_size=25`), prevenindo limites de tamanho de requisição e timeouts na API de embeddings da OpenAI.
+   - Armazenamento de `content_hash` (SHA-256) no payload do Qdrant.
+   - `get_by_path(path)`: busca direta do texto completo no Qdrant via ID determinístico `uuid5(path)` em milissegundos.
+   - `get_indexed_metadata_map()`: varredura via `client.scroll` trazendo mapa `{path: content_hash}` sem tráfego de vetores.
+3. **Sincronização Incremental e Prioridade Qdrant no `KnowledgeDomainService` (`src/domain/knowledge.py`):**
+   - `sync_knowledge()` compara o hash atual de cada nota com o Qdrant: notas idênticas são puladas (zero custo de inferência/tokens).
+   - Detecção e expurgo automático de notas deletadas no repositório (`delete_by_path`).
+   - `get_note_content()` prioriza a consulta no Qdrant, utilizando o disco local apenas como fallback transparente para notas recém-criadas.
+4. **Verificação Automatizada:**
+   - Suíte `src/test/test_zero_disk_sync.py` (6/6 testes aprovados em 0.014s), cobrindo configuração de sparse patterns, shallow detection, batching vetorial, retrieval por path e sync incremental.

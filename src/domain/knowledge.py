@@ -1,5 +1,6 @@
 import os
 import yaml
+import hashlib
 from typing import Optional, List, Dict, Any
 
 from src.domain.models import KnowledgeResult
@@ -288,18 +289,40 @@ class KnowledgeDomainService:
             return KnowledgeResult(success=False, message=f"Erro ao ler metadados: {str(e)}")
 
     async def get_note_content(self, relative_path: str) -> KnowledgeResult:
-        """Lê o conteúdo textual completo de uma nota."""
+        """
+        Lê o conteúdo textual completo de uma nota.
+        Consulta prioritariamente o Qdrant (fonte canônica de consulta e contexto),
+        com fallback transparente para o disco local se ainda não estiver indexada.
+        """
         try:
+            # 1. Consulta prioritária no Qdrant
+            clean_rel = relative_path.replace("\\", "/")
+            doc = await self.vector_db.get_by_path(clean_rel)
+            if doc and doc.get("content"):
+                return KnowledgeResult(
+                    success=True,
+                    message=doc["content"],
+                    path=clean_rel,
+                    data=doc["content"]
+                )
+
+            # 2. Fallback para disco local caso seja uma nota recém-criada
             full_path = os.path.join(self.obsidian.vault_path, relative_path)
             content = await self.obsidian.get_note_content(full_path)
-            if content is not None:
-                return KnowledgeResult(success=True, message=content, path=relative_path, data=content)
-            return KnowledgeResult(success=False, message=f"Erro ao ler '{relative_path}'.")
+            if content is not None and content.strip():
+                return KnowledgeResult(success=True, message=content, path=clean_rel, data=content)
+            return KnowledgeResult(success=False, message=f"Nota '{relative_path}' não encontrada.")
         except Exception as e:
             return KnowledgeResult(success=False, message=f"Erro ao ler conteúdo: {str(e)}")
 
     async def sync_knowledge(self) -> KnowledgeResult:
-        """Sincroniza o Obsidian via Git pull e reindexa o Vault no Qdrant."""
+        """
+        Sincroniza o repositório Git em modo ultra-leve (shallow + sparse) e reindexa
+        incrementalmente o Vault no Qdrant.
+        - Identifica notas alteradas via hash SHA-256 e pula notas idênticas (zero desperdício de tokens).
+        - Remove do Qdrant notas deletadas no repositório.
+        - Processa upserts em batches seguros contra timeouts na OpenAI.
+        """
         try:
             await self.obsidian.sync()
             # Garante envio de quaisquer commits locais pendentes (ex: criados anteriormente sem push)
@@ -307,27 +330,73 @@ class KnowledgeDomainService:
                 await self.obsidian.push("Maeve: Sincronização de notas pendentes")
             except Exception as push_err:
                 print(f"Aviso ao verificar commits pendentes no sync: {push_err}")
+
             notes = await self.obsidian.list_all_notes()
-            texts, metadatas = [], []
+            indexed_map = await self.vector_db.get_indexed_metadata_map()
+
+            texts_to_upsert: List[str] = []
+            metas_to_upsert: List[Dict[str, Any]] = []
+            skipped_count = 0
+            current_paths = set()
+
             for note_path in notes:
+                clean_path = note_path.replace("\\", "/")
+                current_paths.add(clean_path)
                 full_path = os.path.join(self.obsidian.vault_path, note_path)
                 content = await self.obsidian.get_note_content(full_path)
-                if content and content.strip():
-                    meta = await self.obsidian.get_note_metadata(note_path)
-                    texts.append(f"Título: {meta['title']}\nConteúdo: {content}")
-                    metadatas.append({
-                        "source": "obsidian",
-                        "path": meta['path'],
-                        "title": meta['title'],
-                        "folder": meta.get('folder', '')
-                    })
+                if not content or not content.strip():
+                    continue
 
-            if texts:
-                await self.vector_db.upsert_documents(texts=texts, metadatas=metadatas)
+                meta = await self.obsidian.get_note_metadata(note_path)
+                text_to_index = f"Título: {meta.get('title', clean_path)}\nConteúdo: {content}"
+                content_hash = hashlib.sha256(text_to_index.encode("utf-8")).hexdigest()
+
+                # Checagem incremental: se o hash já bate com o que está no Qdrant, pula re-embedding
+                if indexed_map.get(clean_path) == content_hash:
+                    skipped_count += 1
+                    continue
+
+                texts_to_upsert.append(text_to_index)
+                metas_to_upsert.append({
+                    "source": "obsidian",
+                    "path": clean_path,
+                    "title": meta.get("title", ""),
+                    "folder": meta.get("folder", ""),
+                    "content_hash": content_hash
+                })
+
+            # Detecta e remove notas apagadas no repositório
+            deleted_count = 0
+            for old_path in indexed_map.keys():
+                if old_path not in current_paths:
+                    try:
+                        await self.vector_db.delete_by_path(old_path)
+                        deleted_count += 1
+                    except Exception as del_err:
+                        print(f"Aviso ao expurgar '{old_path}' do Qdrant: {del_err}")
+
+            # Upsert seguro em batches
+            if texts_to_upsert:
+                await self.vector_db.upsert_documents(
+                    texts=texts_to_upsert,
+                    metadatas=metas_to_upsert,
+                    batch_size=25
+                )
+
+            total_synced = len(texts_to_upsert)
+            msg = (
+                f"Sincronização concluída com sucesso: {total_synced} notas atualizadas/indexadas, "
+                f"{skipped_count} notas mantidas (sem alterações), {deleted_count} removidas."
+            )
             return KnowledgeResult(
                 success=True,
-                message=f"Sincronização concluída: {len(texts)} notas indexadas.",
-                data={"notes_indexed": len(texts)}
+                message=msg,
+                data={
+                    "updated": total_synced,
+                    "unchanged": skipped_count,
+                    "deleted": deleted_count,
+                    "total_vault": len(notes)
+                }
             )
         except Exception as e:
             return KnowledgeResult(success=False, message=f"Erro na sincronização: {str(e)}")
