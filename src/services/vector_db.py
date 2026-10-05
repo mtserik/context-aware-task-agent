@@ -30,7 +30,7 @@ class VectorDBService:
         return self.client
 
     async def _ensure_collection(self):
-        """Garante que a coleção existe no Qdrant."""
+        """Garante que a coleção e seus índices de payload existem no Qdrant."""
         collections = await self.client.get_collections()
         exists = any(c.name == self.collection_name for c in collections.collections)
         
@@ -39,6 +39,15 @@ class VectorDBService:
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
             )
+            for field in ["source", "path"]:
+                try:
+                    await self.client.create_payload_index(
+                        collection_name=self.collection_name,
+                        field_name=field,
+                        field_schema="keyword",
+                    )
+                except Exception:
+                    pass
 
     async def upsert_documents(self, texts: list[str], metadatas: list[dict] = None, batch_size: int = 25):
         """
