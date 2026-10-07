@@ -159,10 +159,9 @@ tags:
                 highlights=highlights
             )
 
-            # 1. Escreve no Obsidian Vault
+            # 1. Escreve no Obsidian Vault (write_note já versiona e faz push via commit_message)
             commit_msg = f"Maeve: Registrou Diário Noturno de {current_date} ({weekday})"
             await self.obsidian.write_note(note_path, note_content, commit_message=commit_msg)
-            await self.obsidian.push(message=commit_msg)
 
             # 2. Vetoriza no Qdrant para busca semântica
             try:

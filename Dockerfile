@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     tzdata \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global --add safe.directory "*"
 
 # Step 5: Copy the requirements file into the container
 COPY requirements.txt .

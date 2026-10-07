@@ -212,4 +212,3 @@ tags:
 """
         commit_msg = f"Maeve: Atualizou perfil pessoal e padrões do Erik ({today})"
         await self.obsidian.write_note(note_path, content, commit_message=commit_msg)
-        await self.obsidian.push(message=commit_msg)

@@ -305,14 +305,13 @@ tags:
             )
 
             # 3. Gravação da Nota Atômica de Resenha
-            commit_msg = f"Maeve: Registrou resenha cultural de '{clean_title}' ({media_type})"
-            await self.obsidian.write_note(relative_path, note_content, commit_message=commit_msg)
+            await self.obsidian.write_note(relative_path, note_content)
 
             # 4. Atualização do Registro Central (Registro de Filmes Assistidos / Leituras)
             await self._append_to_catalog(clean_title, media_type, rating, review_text, metadata, date_str)
 
-            # 5. Push das alterações
-            await self.obsidian.push(message=f"Maeve: Adicionou '{clean_title}' ao acervo cultural")
+            # 5. Push atômico das alterações (resenha + catálogo)
+            await self.obsidian.push(message=f"Maeve: Registrou resenha de '{clean_title}' e atualizou acervo cultural")
 
             return {
                 "success": True,
@@ -365,6 +364,6 @@ tags:
             else:
                 updated_content = current_content + "\n" + entry
 
-            await self.obsidian.write_note(catalog_path, updated_content, commit_message=f"Maeve: Atualizou catálogo com '{clean_title}'")
+            await self.obsidian.write_note(catalog_path, updated_content)
         except Exception as e:
             logger.warning(f"Não foi possível atualizar catálogo acumulador '{catalog_path}': {e}")

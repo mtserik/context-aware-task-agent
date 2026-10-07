@@ -47,11 +47,65 @@ class ObsidianService:
         self.templates_folder = ".maeve/templates"
         
         self._setup_ssh()
+        self._cleanup_git_locks()
         self._setup_git_user()
 
+    def _cleanup_git_locks(self):
+        """
+        Garante que locks pendentes ou estados de rebase/merge abortados sejam limpos,
+        prevenindo erros fatais como git status 128.
+        """
+        git_dir = os.path.join(self.vault_path, ".git")
+        if not os.path.exists(git_dir):
+            return
+
+        # 1. Limpa index.lock se existir (processo anterior interrompido)
+        index_lock = os.path.join(git_dir, "index.lock")
+        if os.path.exists(index_lock):
+            try:
+                os.remove(index_lock)
+                print("Lock index.lock órfão removido com sucesso.")
+            except Exception as e:
+                print(f"Aviso ao remover index.lock: {e}")
+
+        # 2. Limpa estados de rebase pendentes
+        rebase_merge = os.path.join(git_dir, "rebase-merge")
+        rebase_apply = os.path.join(git_dir, "rebase-apply")
+        if os.path.exists(rebase_merge) or os.path.exists(rebase_apply):
+            try:
+                subprocess.run(["git", "rebase", "--abort"], cwd=self.vault_path, capture_output=True, env=os.environ, check=False)
+            except Exception:
+                pass
+            import shutil
+            if os.path.exists(rebase_merge):
+                shutil.rmtree(rebase_merge, ignore_errors=True)
+            if os.path.exists(rebase_apply):
+                shutil.rmtree(rebase_apply, ignore_errors=True)
+            print("Estado de rebase pendente abortado e limpo.")
+
+        # 3. Limpa merge pendente se existir
+        merge_head = os.path.join(git_dir, "MERGE_HEAD")
+        if os.path.exists(merge_head):
+            try:
+                subprocess.run(["git", "merge", "--abort"], cwd=self.vault_path, capture_output=True, env=os.environ, check=False)
+            except Exception:
+                pass
+            if os.path.exists(merge_head):
+                try:
+                    os.remove(merge_head)
+                except Exception:
+                    pass
+
     def _setup_git_user(self):
-        """Configura nome e email do Git para permitir commits."""
+        """Configura nome e email do Git para permitir commits e safe.directory."""
         try:
+            # Configura safe.directory globalmente para evitar erro 128 de 'dubious ownership' em Docker/Railway
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", "*"],
+                capture_output=True,
+                check=False,
+                env=os.environ
+            )
             # Verifica se já está configurado no repositório
             if os.path.exists(os.path.join(self.vault_path, ".git")):
                 self._run_git_sync(["config", "user.name", "Maeve AI Agent"])
@@ -300,6 +354,7 @@ class ObsidianService:
             print("Atualizando Vault ultra-leve (git fetch shallow + sparse)...")
             branch = await self._ensure_branch()
             self._configure_sparse_checkout()
+            self._cleanup_git_locks()
             try:
                 try:
                     await self._run_git(["fetch", "--depth", "1", "--filter=blob:none", "origin", branch])
@@ -313,10 +368,7 @@ class ObsidianService:
                     await self._run_git(["pull", "--rebase", "origin", branch])
             except Exception as e:
                 print(f"Aviso no update do vault: {e}. Tentando fallback seguro...")
-                try:
-                    await self._run_git(["rebase", "--abort"])
-                except Exception:
-                    pass
+                self._cleanup_git_locks()
                 try:
                     await self._run_git(["pull", "origin", branch, "--no-edit"])
                 except Exception as pull_err:
@@ -325,13 +377,14 @@ class ObsidianService:
     async def push(self, message: str = "Maeve Auto-update"):
         """
         Faz o commit e push das alterações locais, garantindo sincronia com o remoto.
-        Compatível com shallow clone (--depth 1).
+        Compatível com shallow clone (--depth 1) e com recuperação atômica contra erro 128.
         """
         if not os.path.exists(os.path.join(self.vault_path, ".git")):
             print(f"Aviso: Vault em '{self.vault_path}' não é um repositório Git. Pulando push Git.")
             return
 
         try:
+            self._cleanup_git_locks()
             branch = await self._ensure_branch()
             self._setup_git_user()
 
@@ -352,18 +405,68 @@ class ObsidianService:
                     await self._run_git(["push", "origin", f"HEAD:{branch}"])
                     print(f"Alterações enviadas com sucesso para origin/{branch}: {message}")
                 except Exception as push_err:
-                    print(f"Push direto rejeitado ({push_err}). Tentando sincronizar com fetch shallow antes...")
+                    print(f"Push direto rejeitado ({push_err}). Tentando sincronizar com fetch e rebase...")
+                    # 1. Tenta aprofundar histórico recente para conectar grafos shallow
                     try:
-                        await self._run_git(["fetch", "--depth", "1", "origin", branch])
+                        await self._run_git(["fetch", "--deepen=20", "origin", branch])
+                    except Exception:
+                        try:
+                            await self._run_git(["fetch", "--depth", "1", "origin", branch])
+                        except Exception as fetch_err:
+                            print(f"Aviso no fetch de recuperação: {fetch_err}")
+
+                    # 2. Tenta rebase com tratamento seguro contra estados corrompidos (erro 128)
+                    rebase_ok = False
+                    try:
                         await self._run_git(["rebase", f"origin/{branch}"])
                         await self._run_git(["push", "origin", f"HEAD:{branch}"])
+                        rebase_ok = True
                         print(f"Push concluído com sucesso após rebase: {message}")
                     except Exception as rebase_err:
-                        print(f"Falha no push após rebase: {rebase_err}")
-                        raise rebase_err
+                        print(f"Aviso: Rebase falhou ({rebase_err}). Abortando rebase e aplicando reconciliação atômica...")
+                        self._cleanup_git_locks()
+
+                    # 3. Fallback infalível para agente de notas (se rebase falhar por histórias desconexas / erro 128):
+                    if not rebase_ok:
+                        print("Executando reconciliação atômica por reaplicação de arquivos sobre origin/branch...")
+                        try:
+                            changed_files = []
+                            try:
+                                changed_files_out = await self._run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+                                changed_files = [f.strip() for f in changed_files_out.splitlines() if f.strip()]
+                            except Exception:
+                                pass
+
+                            saved_contents = {}
+                            for rel_file in changed_files:
+                                full_file_path = os.path.join(self.vault_path, rel_file)
+                                if os.path.isfile(full_file_path):
+                                    with open(full_file_path, "r", encoding="utf-8") as rf:
+                                        saved_contents[rel_file] = rf.read()
+
+                            await self._run_git(["reset", "--hard", f"origin/{branch}"])
+
+                            for rel_file, file_text in saved_contents.items():
+                                full_file_path = os.path.join(self.vault_path, rel_file)
+                                os.makedirs(os.path.dirname(full_file_path), exist_ok=True)
+                                with open(full_file_path, "w", encoding="utf-8") as wf:
+                                    wf.write(file_text)
+
+                            await self._run_git(["add", "."])
+                            re_status = await self._run_git(["status", "--porcelain"])
+                            if re_status.strip():
+                                await self._run_git(["commit", "-m", message])
+                                await self._run_git(["push", "origin", f"HEAD:{branch}"])
+                                print(f"Push concluído com sucesso após reconciliação atômica: {message}")
+                            else:
+                                print("Reconciliação concluída: conteúdo já alinhado com o remoto.")
+                        except Exception as fatal_rec_err:
+                            self._cleanup_git_locks()
+                            raise fatal_rec_err
             else:
                 print("Nada para commitar ou enviar ao remoto.")
         except Exception as e:
+            self._cleanup_git_locks()
             error_msg = f"FALHA CRÍTICA NO GIT: {str(e)}"
             print(error_msg)
             raise Exception(error_msg)
@@ -503,6 +606,12 @@ class ObsidianService:
         Cria ou atualiza uma nota no vault.
         relative_path: Caminho relativo ao vault (ex: 'Inbox/MinhaNota.md')
         """
+        if commit_message:
+            try:
+                await self.sync()
+            except Exception as sync_err:
+                print(f"Aviso em sync pré-escrita: {sync_err}")
+
         folder, filename = os.path.split(relative_path)
         clean_filename = sanitize_vault_filename(filename)
         clean_relative_path = os.path.join(folder, clean_filename).replace("\\", "/") if folder else clean_filename
@@ -538,6 +647,12 @@ class ObsidianService:
         """
         Grava um arquivo binário (imagens, capas, anexos) no vault.
         """
+        if commit_message:
+            try:
+                await self.sync()
+            except Exception as sync_err:
+                print(f"Aviso em sync pré-escrita binária: {sync_err}")
+
         folder, filename = os.path.split(relative_path)
         clean_filename = sanitize_vault_filename(filename)
         clean_relative_path = os.path.join(folder, clean_filename).replace("\\", "/") if folder else clean_filename
@@ -597,6 +712,12 @@ class ObsidianService:
         """
         Remove um arquivo ou pasta do vault.
         """
+        if commit_message:
+            try:
+                await self.sync()
+            except Exception as sync_err:
+                print(f"Aviso em sync pré-deleção: {sync_err}")
+
         try:
             full_path = self._safe_resolve(relative_path)
         except ValueError as e:
@@ -620,6 +741,12 @@ class ObsidianService:
         """
         Move ou renomeia um arquivo ou pasta.
         """
+        if commit_message:
+            try:
+                await self.sync()
+            except Exception as sync_err:
+                print(f"Aviso em sync pré-movimentação: {sync_err}")
+
         old_full_path = self._safe_resolve(old_relative_path)
         new_full_path = self._safe_resolve(new_relative_path)
         
@@ -656,6 +783,12 @@ class ObsidianService:
             moves: Lista de dicionários no formato [{'old_path': '...', 'new_path': '...'}, ...]
             commit_message: Mensagem personalizada de commit (opcional).
         """
+        if commit_message:
+            try:
+                await self.sync()
+            except Exception as sync_err:
+                print(f"Aviso em sync pré-batch-move: {sync_err}")
+
         import shutil
         success_moves = []
         failed_moves = []
@@ -704,6 +837,12 @@ class ObsidianService:
         preservando .git e .obsidian.
         Retorna a lista de pastas removidas.
         """
+        if commit_message:
+            try:
+                await self.sync()
+            except Exception as sync_err:
+                print(f"Aviso em sync pré-cleanup: {sync_err}")
+
         removed_folders = []
         
         for root, dirs, files in os.walk(self.vault_path, topdown=False):
