@@ -1077,4 +1077,136 @@ Para processar com fidelidade livros de naturezas radicalmente distintas (ex: *A
    - Detecção e expurgo automático de notas deletadas no repositório (`delete_by_path`).
    - `get_note_content()` prioriza a consulta no Qdrant, utilizando o disco local apenas como fallback transparente para notas recém-criadas.
 4. **Verificação Automatizada:**
-   - Suíte `src/test/test_zero_disk_sync.py` (6/6 testes aprovados em 0.014s), cobrindo configuração de sparse patterns, shallow detection, batching vetorial, retrieval por path e sync incremental.
+   - Suíte `src/test/test_zero_disk_sync.py` (6/6 testes aprovados em 0.014s), cobrindo configuração de sparse patterns, shallow detection, batching vetorial, retrieval por path e sync incremental.
+
+---
+
+## 10. Maeve 2.0: Cognitive Parity, Rolling Memory & Omnipresent Agent (Master Roadmap & Sprints)
+
+> **Visão de Engenharia (Staff Persona):**
+> A versão 2.0 da Maeve tem como missão estratégica estabelecer **Paridade Cognitiva Total** entre a interface do Telegram/Cloud (Railway) e o ambiente de desenvolvimento local (Antigravity CLI / MCP).
+> Elimina definitivamente a perda de contexto por truncamento ingênuo de mensagens, a "perda na tradução" do padrão Tri-Tier desacoplado e o inchaço de tokens por outputs brutos de ferramentas, expandindo a presença da Maeve para o controle de desktop e hardware físico residencial.
+
+```mermaid
+flowchart TD
+    subgraph "Entradas Multicanal"
+        TG["📱 Telegram Bot (Texto & Áudio)"]
+        CLI["💻 Antigravity CLI / Local MCP"]
+        SAT["🎤 Satélite Físico (ESP32-S3 / openWakeWord)"]
+    end
+
+    subgraph "Maeve 2.0 Core Brain (Railway / Local)"
+        GW["Universal Agent Gateway"]
+        COMP["Rolling Memory Summarizer (Compaction Buffer)"]
+        GROUND["Living Operational Grounding (TickTick + Profile)"]
+        REWRITE["Contextual Query Expansion (HyDE / RAG)"]
+        UNIFIED["Single-Brain ReAct Engine (Claude 3.5 Sonnet / Frontier)"]
+        PRUNE["Tool Output Pruner & Anti-Noise Sanitizer"]
+    end
+
+    subgraph "Ações & Periféricos"
+        OBS["📚 Obsidian Vault (Qdrant Sync)"]
+        TT["✅ TickTick REST / MCP"]
+        HASS["🏠 Home Assistant (Xiaomi, Zinnia, Hisense)"]
+        OS["🖥️ Desktop & Spotify Gateway (Windows)"]
+    end
+
+    TG --> GW
+    CLI --> GW
+    SAT --> GW
+
+    GW --> GROUND
+    GROUND --> COMP
+    COMP --> REWRITE
+    REWRITE --> UNIFIED
+    UNIFIED <--> PRUNE
+    PRUNE <--> OBS
+    PRUNE <--> TT
+    PRUNE <--> HASS
+    PRUNE <--> OS
+```
+
+### 10.1 Sprint 22: Hierarchical Rolling Memory, Context Compaction & Living Session Grounding
+
+> **Objetivo:** Erradicar a perda de contexto e a amnésia conversacional no Telegram, substituindo o truncamento cego de 30 mensagens por compressão semântica contínua e mantendo o contexto operacional sempre vivo.
+
+#### 1. Diagnóstico do Gargalo
+- `_sanitize_message_history` fatiando rigidamente em `limit=30`. Como cada turno com ferramentas consome de 4 a 6 mensagens, conversas com mais de 5 turnos sofrem perda total dos acordos e variáveis iniciais.
+- `session_context` restrito a cold starts (>2 horas de inatividade). Em conversas contínuas, o modelo fica sem ancoragem de novas tarefas concluídas ou modificações na agenda.
+
+#### 2. Entregáveis Técnicos & Status de Conclusão
+- [x] **`RollingMemorySummarizer` (`src/agent/memory/summarizer.py`):**
+  - Monitoramento contínuo da janela de mensagens do LangGraph.
+  - Compacta turnos antigos em `<resumo_sessao_consolidada>` preservando decisões, variáveis e IDs sem cortar pares de ferramentas.
+  - Suporte dual: síntese via LLM rápida com fallback determinístico resiliente.
+- [x] **`Living Operational Grounding` (`src/domain/session.py` & `src/services/telegram_bot.py`):**
+  - Ancoragem contínua via `get_living_session_context` com TTL cache de 3 minutos e invalidação programada.
+  - O Telegram e o engine recebem estado operacional fresco a cada turno sem sobrecarga de rede.
+- [x] **`Tool Output Pruning & Sanitizer` (`src/agent/tools/pruning.py`):**
+  - Interceptação de retornos brutos de ferramentas (`ToolMessage`).
+  - Notas do Obsidian podadas em 1.800 caracteres com aviso informativo e listagens do TickTick higienizadas (top 20 tarefas com exclusão de ruído de UI).
+- [x] **Verificação & Testes:**
+  - Suíte `src/test/test_sprint22_rolling_memory.py` com 9/9 testes unitários e de integração aprovados em 0.76s.
+
+---
+
+### 10.2 Sprint 23: Single-Brain Unified ReAct Loop & Contextual Query Expansion (RAG)
+
+> **Objetivo:** Eliminar a degradação cognitiva do padrão Tri-Tier (Sonnet Planner -> Luna Executor) e dotar a busca semântica de capacidade de expansão contextual.
+
+#### 1. Diagnóstico do Gargalo
+- O Sonnet desenha o plano estratégico, mas a execução física e a redação da resposta final no Telegram são delegadas à Luna (modelo rápido), gerando perda na tradução, respostas superficiais e falhas em retornos complexos.
+- Consultas elípticas ao RAG ("E como ficou aquilo?") falham na busca vetorial direta por falta de palavras-chave no texto isolado da pergunta.
+
+#### 2. Entregáveis Técnicos & Status de Conclusão
+- [x] **`Single-Brain Unified ReAct Mode` (`src/agent/engine.py`):**
+  - Implementação do modo `MAEVE_UNIFIED_BRAIN=true` (padrão 2.0).
+  - Em solicitações de alta complexidade ou domínio conceitual (`knowledge`, `general`, etc.), o Sonnet assume o ciclo completo ReAct diretamente no `call_model_node`, eliminando o nó intermediário do planner e a degradação na passagem para a Luna.
+  - A Luna permanece reservada exclusivamente como executor Fast-Path para saudações, comandos diretos simples e confirmações de um único passo.
+- [x] **`Contextual Query Expansion / HyDE` (`src/domain/query_expansion.py`, `src/domain/knowledge.py` & `src/agent/engine.py`):**
+  - Criação da classe `ContextualQueryExpander` para detecção de anáforas e elipses contextuais.
+  - Pré-processamento e enriquecimento de queries com substantivos, entidades e termos técnicos das mensagens recentes antes da busca por similaridade cossenoidal no Qdrant.
+  - Integração no `_call_model_node`, `_planner_node` e `KnowledgeDomainService.search_knowledge_context`.
+- [x] **Verificação & Testes:**
+  - Suíte `src/test/test_sprint23_unified_brain_rag.py` com 9/9 testes unitários e de integração aprovados em 4.38s, cobrindo expansão contextual, roteamento direto single-brain e execução de ferramentas.
+  - Suíte de regressão completa (Sprint 22 e serviços de domínio) validada com 100% de sucesso.
+
+---
+
+### 10.3 Sprint 24: Omnichannel Client Parity & Unified MCP Server Core
+
+> **Objetivo:** Unificar a arquitetura de ferramentas para que Telegram, CLI e clientes externos compartilhem a mesma interface canônica via Model Context Protocol (MCP).
+
+#### 2. Entregáveis Técnicos & Status de Conclusão
+- [x] **Unificação de Catálogo FastMCP & Ponte Bidirecional (`src/mcp/` & `src/agent/tools/mcp_bridge.py`):**
+  - Registro de ferramentas de busca na web (`web_search` e `deep_research`) diretamente no FastMCP server (`src/mcp/tools/search.py`).
+  - Criação da ponte canônica `FastMCPToolBridge` e conversor determinístico `fastmcp_tool_to_langchain_tool`, permitindo que o LangGraph consuma todas as 18 ferramentas a partir do registro do FastMCP sem duplicações de código.
+  - Compatibilidade bidirecional 100% garantida entre o Antigravity CLI/IDE e o agente interno do Telegram.
+- [x] **Pipeline de Áudio & Streaming Fluido no Telegram (`src/services/telegram_bot.py`):**
+  - Transcrição Whisper otimizada com auto-deleção garantida de mensagens de status transitório ("Ouvindo... 🎙️", "Pesquisando na web...").
+  - Formatação e exibição sutil da transcrição antes do processamento e limpeza em bloco `finally` resiliente.
+- [x] **Verificação & Testes:**
+  - Suíte `src/test/test_sprint24_mcp_parity.py` com 9/9 testes unitários aprovados em 1.15s, validando paridade de 18 tools, particionamento por domínio e auto-deleção de mensagens de status no bot.
+  - Suíte consolidada (Sprints 22, 23, 24 e serviços de domínio) validada com 43/43 testes aprovados.
+
+---
+
+### 10.4 Sprint 25: Physical Voice Satellite & Smart Home Bridge (Maeve Física)
+
+> **Objetivo:** Levar a presença da Maeve para o ambiente físico e permitir controle total da casa inteligente e do computador desktop.
+
+#### 2. Entregáveis Técnicos & Status de Conclusão
+- [x] **`Smart Home Hub Integration` (`src/services/smarthome.py`, `src/domain/smarthome.py` & `src/mcp/tools/smarthome.py`):**
+  - Conexão do ecossistema Maeve com a REST API do **Home Assistant** com fallback resiliente para ambiente sem credenciais.
+  - Robô Aspirador Xiaomi: controle de início, pausa, parada e retorno à base (`control_vacuum`).
+  - Interruptores Zinnia: controle de iluminação e circuitos (`control_switch`).
+  - Telemetria e status unificado de dispositivos (`get_device_status`).
+- [x] **`Desktop OS & Media Gateway` (`src/services/desktop_gateway.py`, `src/domain/desktop.py` & `src/mcp/tools/desktop.py`):**
+  - Gateway de execução local com lista branca estrita de segurança para inicialização de aplicativos permitidos (Spotify, Obsidian, VS Code, Chrome, Terminal, etc.) via `launch_desktop_app`.
+  - Abertura de URLs seguras no navegador via `open_browser_url`.
+  - Controle multimídia nativo no Windows (Play/Pause, Próxima, Anterior, Volume, Mute) via teclas virtuais do sistema operacional (`control_media_player`).
+- [x] **`Voice Satellite Protocol & Arquitetura de Presença`:**
+  - Especificação arquitetural registrada na ADR-015 e na nota de projeto no Obsidian (`Projetos/Maeve Física — Satélite de Voz, Controle de Desktop e Smart Home.md`).
+- [x] **Verificação & Testes:**
+  - Suíte `src/test/test_sprint25_smarthome_desktop.py` com 10/10 testes unitários aprovados em 0.25s, cobrindo mapeamento de entidades, whitelist de desktop, controle multimídia e despacho MCP.
+  - Suíte consolidada de todas as Sprints (22, 23, 24 e 25) validada com 37/37 testes unitários aprovados em 3.78s e 16/16 testes de serviços de domínio verdes (53/53 testes no total).

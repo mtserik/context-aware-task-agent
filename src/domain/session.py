@@ -1,3 +1,4 @@
+import time
 import logging
 from typing import Optional, Dict, Any
 
@@ -10,14 +11,40 @@ logger = logging.getLogger("SessionDomainService")
 
 class SessionDomainService:
     """
-    Serviço de Domínio para montagem do Bloco de Contexto Operacional de Sessão.
-    Garante que toda nova conversa iniciada no Telegram ou outras interfaces receba
-    a mesma ancoragem de alta fidelidade que o Antigravity possui via get_personal_context.
+    Serviço de Domínio para montagem e manutenção do Bloco de Contexto Operacional de Sessão.
+    Garante que toda conversa iniciada ou em andamento no Telegram ou outras interfaces receba
+    a mesma ancoragem contínua de alta fidelidade que o Antigravity possui via get_personal_context (Sprint 22).
     """
 
     def __init__(self, task_service: Optional[TaskDomainService] = None):
         self._tasks = task_service or TaskDomainService()
         self._db = get_database_service()
+        self._cache: Dict[str, Dict[str, Any]] = {}
+
+    def invalidate_cache(self, user_id: Optional[str] = None):
+        """Invalida o cache para forçar reconstrução imediata."""
+        if user_id:
+            self._cache.pop(user_id, None)
+        else:
+            self._cache.clear()
+
+    async def get_living_session_context(self, user_id: str, max_age_seconds: int = 180) -> str:
+        """
+        Retorna o contexto operacional contínuo (Living Grounding - Sprint 22).
+        Utiliza TTL cache de 3 minutos para evitar chamadas de rede redundantes a cada mensagem
+        e garantir que alterações na agenda e perfil sejam refletidas rapidamente.
+        """
+        now = time.time()
+        user_cache = self._cache.get(user_id)
+        if user_cache and (now - user_cache.get("timestamp", 0)) < max_age_seconds:
+            return user_cache["block"]
+
+        fresh_block = await self.build_session_context_block(user_id)
+        self._cache[user_id] = {
+            "timestamp": now,
+            "block": fresh_block,
+        }
+        return fresh_block
 
     async def build_session_context_block(self, user_id: str) -> str:
         """
@@ -49,7 +76,7 @@ class SessionDomainService:
             logger.warning("Falha ao carregar insights para contexto de sessão: %s", e)
 
         context_lines = [
-            "# CONTEXTO OPERACIONAL ATIVO DA SESSÃO (NOVA CONVERSA)",
+            "# CONTEXTO OPERACIONAL ATIVO DA SESSÃO",
             f"- **Data Atual:** {temporal['date']} ({temporal['day_of_week']})",
             f"- **Hora Oficial:** {temporal['time']} (Horário de Brasília, UTC-3)",
             f"- **Momento Circadiano:** {temporal['period']}",

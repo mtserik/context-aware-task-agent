@@ -23,6 +23,10 @@ from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE, get_system_prompt, get_sys
 from src.services.registry import get_vector_db_service
 from src.domain.tasks import normalize_ticktick_date
 from src.domain.temporal import resolve_temporal_context
+from src.domain.session import SessionDomainService
+from src.domain.query_expansion import ContextualQueryExpander
+from src.agent.memory.summarizer import RollingMemorySummarizer
+from src.agent.tools.pruning import prune_tool_messages
 from src.agent.tools import (
     ALL_TOOLS,
     TASK_TOOLS,
@@ -199,6 +203,19 @@ def extract_text_from_message(data: Any) -> str:
 _resolve_temporal_context = resolve_temporal_context
 
 
+def _is_anthropic_model(model: Any) -> bool:
+    """Verifica de forma resiliente se o modelo é uma instância ou wrapper do Claude/Anthropic."""
+    if _ANTHROPIC_AVAILABLE and isinstance(model, ChatAnthropic):
+        return True
+    model_name = getattr(model, "model_name", None)
+    if isinstance(model_name, str) and "claude" in model_name.lower():
+        return True
+    model_attr = getattr(model, "model", None)
+    if isinstance(model_attr, str) and "claude" in model_attr.lower():
+        return True
+    return False
+
+
 def create_chat_model(
     model_name: str,
     temperature: Optional[float] = 0,
@@ -283,6 +300,16 @@ class MaeveAgent:
         self.smart_model = self.smart_model_base.bind_tools(ALL_TOOLS)
 
         self._vector_db = get_vector_db_service()
+
+        # Expansor contextual de queries para RAG com resolução de anáforas (Sprint 23)
+        self.query_expander = ContextualQueryExpander()
+
+        # Motor de compactação hierárquica e contínua de memória (Sprint 22)
+        self.summarizer = RollingMemorySummarizer(
+            llm=self.fast_model_base,
+            max_messages_before_summary=int(os.getenv("MAEVE_MAX_MESSAGES_BEFORE_SUMMARY", "16")),
+            messages_to_keep=int(os.getenv("MAEVE_MESSAGES_TO_KEEP", "6")),
+        )
 
         # Garante que SEMPRE exista um checkpointer ativo (evita que a máquina de estados fique sem memória)
         if checkpointer is None:
@@ -529,16 +556,21 @@ class MaeveAgent:
                 decision["domain"] = "tasks"
                 decision["reason"] = "Criação de tarefa direcionada para o TickTick (tasks)"
 
-            # Hierarquia Cognitiva Tri-Tier:
+            # Hierarquia Cognitiva Tri-Tier & Single-Brain Unified ReAct (Sprint 23):
             # 1. 'sonnet': Alta complexidade (>=4), síntese do Obsidian/knowledge, raciocínio teórico
+            #    - Se MAEVE_UNIFIED_BRAIN=true (padrão 2.0), plan_required=False: o Sonnet assume o ciclo
+            #      ReAct diretamente no call_model_node com ferramentas, sem degradação na passagem para Luna.
+            #    - Se MAEVE_UNIFIED_BRAIN=false (legado), plan_required=True: Sonnet gera plano e Luna executa.
             # 2. 'terra': Domínio 'tasks' (TickTick), planejamento diário, rotina, complexidade intermediária (1 a 3)
             # 3. 'none': Fast-path (saudações e confirmações curtas de turno anterior)
+            unified_brain = os.getenv("MAEVE_UNIFIED_BRAIN", "true").lower() == "true"
+
             if is_confirmation:
                 brain = "none"
                 plan_required = False
             elif domain == "knowledge" or decision.get("complexity", 1) >= 4:
                 brain = "sonnet"
-                plan_required = True
+                plan_required = not unified_brain
             elif domain == "tasks" or decision.get("complexity", 1) >= 2 or bool(decision.get("plan_required", False)):
                 brain = "terra"
                 plan_required = True
@@ -563,12 +595,14 @@ class MaeveAgent:
             }
         except Exception as e:
             print(f"[Router Warning]: Erro no Router: {e}. Defaulting to Fast/General.")
+            unified_brain = os.getenv("MAEVE_UNIFIED_BRAIN", "true").lower() == "true"
             fallback_domain = "tasks" if has_ticktick else ("knowledge" if (has_obsidian or is_direct_note_creation) else (active_domain or "general"))
             fallback_brain = "sonnet" if fallback_domain == "knowledge" else ("terra" if fallback_domain == "tasks" else "none")
+            fallback_plan_required = (fallback_brain == "terra") or (fallback_brain == "sonnet" and not unified_brain)
             return {
                 "current_intent": fallback_domain,
                 "active_domain": fallback_domain,
-                "routing_metadata": {"model": "fast", "complexity": 1, "domain": fallback_domain, "brain": fallback_brain, "reason": "Fallback due to error", "plan_required": fallback_brain != "none", "clarification_needed": False},
+                "routing_metadata": {"model": "fast", "complexity": 1, "domain": fallback_domain, "brain": fallback_brain, "reason": "Fallback due to error", "plan_required": fallback_plan_required, "clarification_needed": False},
                 "brain": fallback_brain,
                 "plan": None,
             }
@@ -589,31 +623,41 @@ class MaeveAgent:
             brain_name = "Terra (Operational Brain)"
 
         messages = state.get("messages", [])
-        final_messages = _sanitize_message_history(messages, limit=20)
+        pruned_messages = prune_tool_messages(messages)
+        compacted_messages = await self.summarizer.compact_history(pruned_messages)
+        final_messages = _sanitize_message_history(compacted_messages, limit=20)
         user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
         user_query = user_msg.content if user_msg else ""
 
-        # Contexto do Obsidian (se relevante para o planejamento conceitual) com corte de score cossenoidal
+        # Contexto do Obsidian com Contextual Query Expansion (Sprint 23) e corte de score cossenoidal
         current_intent = state.get("current_intent") or "general"
         should_search_rag = bool(user_query) and current_intent in ["knowledge", "general", "chat"]
-        context_docs = await self._vector_db.search_context(user_query, limit=3, score_threshold=0.68) if should_search_rag else []
+        if should_search_rag:
+            expanded_query = self.query_expander.expand_query(str(user_query), final_messages[:-1])
+            context_docs = await self._vector_db.search_context(expanded_query, limit=3, score_threshold=0.68)
+        else:
+            context_docs = []
         context_str = "\n".join([
             f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:800]}" for doc in context_docs
         ])
 
         temporal = _resolve_temporal_context()
         session_context = state.get("session_context")
+        if not session_context and user_msg:
+            try:
+                u_id = user_msg.additional_kwargs.get("user_id", "unknown")
+                session_service = SessionDomainService()
+                session_context = await session_service.get_living_session_context(user_id=u_id)
+            except Exception as e:
+                logger.warning("Falha ao obter living session context no planner: %s", e)
+
         static_prompt, dynamic_prompt = get_planner_prompt_parts(
             obsidian_context=context_str or "[Nenhuma nota prévia diretamente relacionada]",
             session_context=session_context,
             **temporal,
         )
 
-        is_anthropic = (
-            (isinstance(planner_model, ChatAnthropic) if _ANTHROPIC_AVAILABLE else False)
-            or "claude" in getattr(planner_model, "model_name", "").lower()
-            or "claude" in getattr(planner_model, "model", "").lower()
-        )
+        is_anthropic = _is_anthropic_model(planner_model)
 
         if is_anthropic:
             system_message = SystemMessage(
@@ -655,19 +699,19 @@ class MaeveAgent:
         """
         routing = state.get("routing_metadata") or {"model": "fast", "domain": "general"}
         current_intent = state.get("current_intent") or routing.get("domain", "general")
+        brain = state.get("brain") or routing.get("brain", "none")
+        unified_brain = os.getenv("MAEVE_UNIFIED_BRAIN", "true").lower() == "true"
 
-        # Arquitetura Planner-Executor: O executor operacional é SEMPRE o fast_model_base (GPT-5.6 Luna)
-        # O Sonnet (smart_model_base) atua exclusivamente como Planner no nó 'planner'
-        if os.getenv("MAEVE_ALWAYS_USE_SMART_FOR_EXECUTION", "false").lower() == "true":
+        # Modo Single-Brain Unified ReAct (Sprint 23):
+        # Quando o cérebro designado é o Sonnet (brain == 'sonnet' ou complexidade >= 4) e MAEVE_UNIFIED_BRAIN=true,
+        # o próprio modelo de fronteira assume a execução direta do ciclo ReAct (ferramentas + resposta final).
+        # A Luna (fast_model_base) permanece para saudações, tarefas de rotina planejadas por Terra e confirmações.
+        if os.getenv("MAEVE_ALWAYS_USE_SMART_FOR_EXECUTION", "false").lower() == "true" or (unified_brain and brain == "sonnet"):
             base_model = self.smart_model_base
         else:
             base_model = self.fast_model_base
 
-        is_anthropic = (
-            (isinstance(base_model, ChatAnthropic) if _ANTHROPIC_AVAILABLE else False)
-            or "claude" in getattr(base_model, "model_name", "").lower()
-            or "claude" in getattr(base_model, "model", "").lower()
-        )
+        is_anthropic = _is_anthropic_model(base_model)
 
         # 1. Dynamic Tool Binding com Anthropic Tool Caching
         active_tools = get_tools_for_intent(current_intent)
@@ -683,8 +727,10 @@ class MaeveAgent:
         else:
             llm = base_model
 
-        # 2. Sanitização do Histórico (janela expandida para 30 mensagens sem penalidade de custo graças ao cache)
-        final_messages = _sanitize_message_history(state['messages'], limit=30)
+        # 2. Poda de Tool Messages e Compactação Hierárquica de Histórico (Sprint 22)
+        pruned_messages = prune_tool_messages(state['messages'])
+        compacted_messages = await self.summarizer.compact_history(pruned_messages)
+        final_messages = _sanitize_message_history(compacted_messages, limit=30)
 
         # 3. Extração de Contexto do Usuário
         user_msg = next((m for m in reversed(final_messages) if isinstance(m, HumanMessage)), None)
@@ -692,7 +738,7 @@ class MaeveAgent:
         chat_id = user_msg.additional_kwargs.get("chat_id", "unknown") if user_msg else "unknown"
         last_query = user_msg.content if user_msg else ""
 
-        # 4. Busca Seletiva e Proativa no RAG (Qdrant) com corte cossenoidal
+        # 4. Busca Seletiva e Proativa no RAG (Qdrant) com Contextual Query Expansion (Sprint 23)
         # Permite busca semântica proativa em knowledge, general, chat ou queries com densidade
         should_search_rag = bool(last_query) and (
             current_intent in ["knowledge", "general", "chat"] or len(str(last_query).split()) >= 3
@@ -702,7 +748,12 @@ class MaeveAgent:
             if len(clean_q) < 5 or clean_q in ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "valeu", "ok"]:
                 should_search_rag = False
 
-        context_docs = await self._vector_db.search_context(last_query, limit=3, score_threshold=0.68) if should_search_rag else []
+        if should_search_rag:
+            expanded_query = self.query_expander.expand_query(str(last_query), final_messages[:-1])
+            context_docs = await self._vector_db.search_context(expanded_query, limit=3, score_threshold=0.68)
+        else:
+            context_docs = []
+
         context_str = "\n".join([
             f"- {doc['metadata'].get('title', 'Nota')}: {doc['content'][:1000]}" for doc in context_docs
         ])
@@ -729,12 +780,20 @@ class MaeveAgent:
 
         temporal = _resolve_temporal_context()
         active_tier = "fast" if base_model == self.fast_model_base else "smart"
+        session_context = state.get("session_context")
+        if not session_context:
+            try:
+                session_service = SessionDomainService()
+                session_context = await session_service.get_living_session_context(user_id=user_id)
+            except Exception as e:
+                logger.warning("Falha ao obter living session context no call_model: %s", e)
+
         static_prompt, dynamic_prompt = get_system_prompt_parts(
             tier=active_tier,
             user_id=user_id,
             chat_id=chat_id,
             obsidian_context=context_str,
-            session_context=state.get("session_context"),
+            session_context=session_context,
             **temporal,
         )
 

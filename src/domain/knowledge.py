@@ -315,6 +315,30 @@ class KnowledgeDomainService:
         except Exception as e:
             return KnowledgeResult(success=False, message=f"Erro ao ler conteúdo: {str(e)}")
 
+    async def search_knowledge_context(
+        self,
+        query: str,
+        limit: int = 5,
+        score_threshold: Optional[float] = 0.68,
+        recent_messages: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca semântica enriquecida com Contextual Query Expansion (Sprint 23).
+        Caso a consulta seja elíptica ou anafórica e haja histórico recente,
+        enriquece os termos antes de calcular a similaridade cossenoidal no Qdrant.
+        """
+        effective_query = query
+        if recent_messages:
+            try:
+                from src.domain.query_expansion import ContextualQueryExpander
+                expander = ContextualQueryExpander()
+                effective_query = expander.expand_query(query, recent_messages)
+            except Exception as exp_err:
+                print(f"⚠️ [KnowledgeDomain] Falha ao expandir consulta: {exp_err}")
+        return await self.vector_db.search_context(
+            effective_query, limit=limit, score_threshold=score_threshold
+        )
+
     async def sync_knowledge(self) -> KnowledgeResult:
         """
         Sincroniza o repositório Git em modo ultra-leve (shallow + sparse) e reindexa

@@ -75,7 +75,8 @@ class BookDomainService:
         extract_images: bool = True,
         sync_git: bool = True,
         sync_vector_db: bool = True,
-        polish_with_llm: bool = False
+        polish_with_llm: bool = False,
+        title: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Executa a ingestão completa com o invariante Zero-Token:
@@ -112,6 +113,9 @@ class BookDomainService:
             )
         else:
             raise ValueError(f"Formato de livro não suportado: '{ext}'. Suportados: .pdf, .epub")
+
+        if title:
+            parsed_book.title = title
 
         clean_title = sanitize_vault_filename(parsed_book.title)
         book_dir = f"Recursos/Livros/{clean_title}"

@@ -233,5 +233,103 @@ class DynamicMCPToolBridge:
         return list(self._cached_tools.values())
 
 
-# Instância singleton global do bridge
+# Instância singleton global do bridge TickTick legado
 mcp_bridge = DynamicMCPToolBridge()
+
+
+def fastmcp_tool_to_langchain_tool(fastmcp_tool: Any) -> StructuredTool:
+    """
+    Converte um objeto FastMCP Tool em uma StructuredTool nativa do LangChain.
+    Preserva nome, descrição, tipagem dos argumentos e execução assíncrona.
+    """
+    fn = getattr(fastmcp_tool, "fn", None)
+    name = getattr(fastmcp_tool, "name", "mcp_tool")
+    description = getattr(fastmcp_tool, "description", "")
+
+    if fn is None:
+        raise ValueError(f"Objeto FastMCP Tool '{name}' não possui função subjacente.")
+
+    return StructuredTool.from_function(
+        coroutine=fn,
+        name=name,
+        description=description,
+    )
+
+
+class FastMCPToolBridge:
+    """
+    Ponte canônica de unificação MCP (Sprint 24):
+    Permite que o LangGraph consuma o catálogo canônico de ferramentas
+    diretamente do servidor FastMCP (src/mcp/server.py), eliminando
+    duplicações de código e garantindo paridade total entre CLI, IDE e Telegram.
+    """
+
+    def __init__(self, mcp_server: Optional[Any] = None):
+        self._mcp_server = mcp_server
+        self._cached_tools: Dict[str, StructuredTool] = {}
+
+    def _get_server(self) -> Any:
+        if self._mcp_server is None:
+            from src.mcp.server import mcp
+            self._mcp_server = mcp
+        return self._mcp_server
+
+    def get_all_tools(self) -> List[StructuredTool]:
+        """Retorna todas as ferramentas registradas no FastMCP convertidas para LangChain."""
+        server = self._get_server()
+        tools_dict = getattr(server._tool_manager, "_tools", {})
+        result = []
+        for name, tool_obj in tools_dict.items():
+            if name not in self._cached_tools:
+                self._cached_tools[name] = fastmcp_tool_to_langchain_tool(tool_obj)
+            result.append(self._cached_tools[name])
+        return result
+
+    def get_tool_by_name(self, name: str) -> Optional[StructuredTool]:
+        """Obtém uma ferramenta específica por nome."""
+        if name in self._cached_tools:
+            return self._cached_tools[name]
+        tools = self.get_all_tools()
+        for t in tools:
+            if t.name == name:
+                return t
+        return None
+
+    def get_tools_for_domain(self, domain: str) -> List[StructuredTool]:
+        """
+        Retorna as ferramentas do FastMCP mapeadas por domínio semântico:
+        - tasks: list_today_tasks, create_task, create_focus_block
+        - knowledge: memory_search, memory_store, search_knowledge, sync_knowledge,
+                     append_session_note, log_decision, batch_move_obsidian_notes,
+                     log_cultural_review, ingest_book
+        - reminders: set_reminder, get_personal_context
+        - search: web_search, deep_research
+        - general: todas as ferramentas
+        """
+        all_tools = self.get_all_tools()
+        tools_map = {t.name: t for t in all_tools}
+
+        domain_mapping = {
+            "tasks": ["list_today_tasks", "create_task", "create_focus_block"],
+            "knowledge": [
+                "memory_search", "memory_store", "search_knowledge", "sync_knowledge",
+                "append_session_note", "log_decision", "batch_move_obsidian_notes",
+                "log_cultural_review", "ingest_book"
+            ],
+            "reminders": ["set_reminder", "get_personal_context"],
+            "search": ["web_search", "deep_research"],
+            "smarthome": ["control_vacuum", "control_switch", "get_device_status"],
+            "desktop": ["launch_desktop_app", "open_browser_url", "control_media_player"],
+            "chat": [],
+        }
+
+        if domain == "general":
+            return all_tools
+
+        names = domain_mapping.get(domain, [])
+        return [tools_map[n] for n in names if n in tools_map]
+
+
+# Instância singleton global da ponte FastMCP
+fastmcp_bridge = FastMCPToolBridge()
+

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from langchain_core.tools import BaseTool
 
 from src.agent.tools.task_tools import (
@@ -59,6 +59,24 @@ DOMAIN_TOOL_REGISTRY: Dict[str, List[BaseTool]] = {
     "general": ALL_TOOLS,
 }
 
+from src.agent.tools.mcp_bridge import (
+    fastmcp_bridge,
+    FastMCPToolBridge,
+    fastmcp_tool_to_langchain_tool,
+)
+
+# Catálogo canônico unificado derivado diretamente do servidor FastMCP (Sprint 24)
+FASTMCP_TOOLS: List[BaseTool] = fastmcp_bridge.get_all_tools()
+
+
+def get_canonical_mcp_tools(domain: Optional[str] = None) -> List[BaseTool]:
+    """Retorna as ferramentas canônicas originadas diretamente do registro do servidor FastMCP."""
+    if not domain or domain == "general":
+        return fastmcp_bridge.get_all_tools()
+    return fastmcp_bridge.get_tools_for_domain(domain)
+
+
 def get_tools_for_intent(intent: str) -> List[BaseTool]:
     """Retorna o subconjunto de ferramentas estritamente necessário para o domínio informado."""
     return DOMAIN_TOOL_REGISTRY.get(intent, ALL_TOOLS)
+

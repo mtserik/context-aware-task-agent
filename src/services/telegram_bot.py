@@ -326,15 +326,15 @@ class TelegramService:
                 await update.message.reply_text("O motor da Maeve está aquecendo. Tente novamente em alguns segundos.")
                 return
 
-            # Verificação de fronteira de sessão conversacional (> 2h de inatividade ou novo dia civil)
+            # Ancoragem Operacional Contínua (Living Session Grounding - Sprint 22)
             session_context = None
             try:
                 db_service = get_database_service()
                 is_new_session = await db_service.check_and_update_session(user_id, chat_id, threshold_seconds=7200)
                 if is_new_session:
                     logging.info(f"✨ [Telegram Bot]: Nova sessão detectada para usuário {user_id}. Injetando contexto operacional...")
-                    session_service = SessionDomainService()
-                    session_context = await session_service.build_session_context_block(user_id=user_id)
+                session_service = SessionDomainService()
+                session_context = await session_service.get_living_session_context(user_id=user_id)
             except Exception as session_err:
                 logging.warning(f"Erro ao verificar/construir contexto de sessão: {session_err}")
 
@@ -405,6 +405,7 @@ class TelegramService:
             if status_msg:
                 try:
                     await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
+                    status_msg = None
                 except Exception:
                     pass
 
@@ -420,6 +421,11 @@ class TelegramService:
 
         except Exception as e:
             logging.error(f"Erro no Telegram (Stream): {e}")
+            if status_msg:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
+                except Exception:
+                    pass
             await update.message.reply_text("Tive um erro interno ao processar sua mensagem.")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -435,12 +441,13 @@ class TelegramService:
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Processa áudio, transcreve com Whisper e envia para Maeve."""
         user_id = str(update.effective_user.id)
+        chat_id = str(update.effective_chat.id)
         
         # Trava de segurança
         if self.allowed_user_id and user_id != self.allowed_user_id:
             return
 
-        await update.message.reply_text("Ouvindo... 🎙️")
+        status_msg = await update.message.reply_text("Ouvindo... 🎙️")
         
         temp_audio_path = None
         try:
@@ -459,15 +466,28 @@ class TelegramService:
                     response_format="text"
                 )
 
-            if transcript:
-                await update.message.reply_text(f"📝 _Transcrição:_ \"{transcript}\"")
+            # Auto-deleção imediata da mensagem de feedback transitório 'Ouvindo...'
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
+                status_msg = None
+            except Exception:
+                pass
+
+            if transcript and str(transcript).strip():
+                clean_transcript = str(transcript).strip()
+                await update.message.reply_text(f"📝 _\"{clean_transcript}\"_", parse_mode="Markdown")
                 # 3. Processar como se fosse texto (forçando resposta em voz)
-                await self._process_text(transcript, update, context, force_voice=True)
+                await self._process_text(clean_transcript, update, context, force_voice=True)
             else:
                 await update.message.reply_text("Não consegui entender o áudio.")
 
         except Exception as e:
             logging.error(f"Erro ao processar áudio: {e}")
+            if status_msg:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
+                except Exception:
+                    pass
             await update.message.reply_text("Erro ao processar sua mensagem de voz.")
         finally:
             # Limpeza garantida
@@ -650,3 +670,8 @@ class TelegramService:
             await self.application.updater.stop()
             await self.application.stop()
             await self.application.shutdown()
+
+
+# Alias para paridade semântica
+TelegramBotService = TelegramService
+

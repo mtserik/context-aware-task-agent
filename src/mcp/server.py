@@ -43,6 +43,9 @@ from src.mcp.tools.context import register_context_tools
 from src.mcp.tools.decisions import register_decision_tools
 from src.mcp.tools.culture import register_culture_tools
 from src.mcp.tools.books import register_book_tools
+from src.mcp.tools.search import register_search_tools
+from src.mcp.tools.smarthome import register_smarthome_tools
+from src.mcp.tools.desktop import register_desktop_tools
 from src.mcp.resources.providers import register_resources
 from src.mcp.prompts.persona import register_prompts
 
@@ -62,19 +65,23 @@ def create_mcp_server() -> FastMCP:
             "Maeve e a camada de contexto, memoria e acao pessoal do Erik Martins. "
             "Voce (o host LLM do Antigravity) e o unico responsavel por raciocinar e gerar respostas. "
             "Use as tools para buscar memoria semantica no Obsidian, gerenciar tarefas no TickTick, "
-            "registrar decisoes e agendar lembretes. "
+            "registrar decisoes, agendar lembretes, controlar a casa inteligente (aspirador, luzes) "
+            "e comandar o computador desktop (abrir apps, links e midia). "
             "Use o resource maeve://personality/system-prompt para adotar a persona da Maeve. "
             "ZERO tokens sao cobrados na infra da Maeve para chamadas a este servidor MCP."
         ),
     )
 
-    # Registra ferramentas determinísticas (Sprint 13: P0)
+    # Registra ferramentas determinísticas (Sprints 13, 24 & 25)
     register_memory_tools(mcp)
     register_task_tools(mcp)
     register_context_tools(mcp)
     register_decision_tools(mcp)
     register_culture_tools(mcp)
     register_book_tools(mcp)
+    register_search_tools(mcp)
+    register_smarthome_tools(mcp)
+    register_desktop_tools(mcp)
 
     # Registra Resources de dados (persona, briefing, temporal, vault)
     register_resources(mcp)
